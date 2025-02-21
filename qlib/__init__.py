@@ -49,12 +49,21 @@ def init(default_conf="client", **kwargs):
     C.set(default_conf, **kwargs)
     get_module_logger.setLevel(C.logging_level)
 
-    # mount nfs
-    for _freq, provider_uri in C.provider_uri.items():
-        mount_path = C["mount_path"][_freq]
-        # check path if server/local
+    # 检查是否使用数据库
+    database_uri = C.get("database_uri")
+    if database_uri:
+        uri_type = C.dpm.get_uri_type(database_uri)
+        if uri_type == "database":
+            # 如果是数据库 URI，设置为默认的 provider_uri
+            C.provider_uri = {C.DEFAULT_FREQ: database_uri}
+        else:
+            logger.warning(f"Invalid database uri type: {database_uri}")
+    
+    # 处理常规的 provider_uri
+    for _freq, provider_uri in C.dpm.provider_uri.items():
         uri_type = C.dpm.get_uri_type(provider_uri)
-        if uri_type == C.LOCAL_URI:
+        if uri_type == "local":
+            mount_path = C["mount_path"].get(_freq)
             if not Path(provider_uri).exists():
                 if C["auto_mount"]:
                     logger.error(
@@ -62,8 +71,11 @@ def init(default_conf="client", **kwargs):
                     )
                 else:
                     logger.warning(f"auto_path is False, please make sure {mount_path} is mounted")
-        elif uri_type == C.NFS_URI:
+        elif uri_type == "nfs":
             _mount_nfs_uri(provider_uri, C.dpm.get_data_uri(_freq), C["auto_mount"])
+        elif uri_type == "database":
+            # 数据库 URI 不需要挂载
+            pass
         else:
             raise NotImplementedError(f"This type of URI is not supported")
 
@@ -72,7 +84,15 @@ def init(default_conf="client", **kwargs):
     if "flask_server" in C:
         logger.info(f"flask_server={C['flask_server']}, flask_port={C['flask_port']}")
     logger.info("qlib successfully initialized based on %s settings." % default_conf)
-    data_path = {_freq: C.dpm.get_data_uri(_freq) for _freq in C.dpm.provider_uri.keys()}
+    
+    # 根据不同的 URI 类型显示不同的信息
+    data_path = {}
+    for _freq, provider_uri in C.dpm.provider_uri.items():
+        uri_type = C.dpm.get_uri_type(provider_uri)
+        if uri_type == "database":
+            data_path[_freq] = f"DolphinDB({provider_uri})"
+        else:
+            data_path[_freq] = C.dpm.get_data_uri(_freq)
     logger.info(f"data_path={data_path}")
 
 

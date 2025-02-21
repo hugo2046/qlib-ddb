@@ -284,9 +284,9 @@ _default_region_config = {
 
 
 class QlibConfig(Config):
-    # URI_TYPE
     LOCAL_URI = "local"
     NFS_URI = "nfs"
+    DATABASE_URI = "database"  # 添加数据库 URI 类型
     DEFAULT_FREQ = "__DEFAULT_FREQ"
 
     def __init__(self, default_conf):
@@ -326,6 +326,13 @@ class QlibConfig(Config):
         @staticmethod
         def get_uri_type(uri: Union[str, Path]):
             uri = uri if isinstance(uri, str) else str(uri.expanduser().resolve())
+            
+            # 检查是否是数据库 URI
+            # 预留其他接口的检查
+            if uri.startswith(("dolphindb://", "mysql://", "postgresql://")):
+                return QlibConfig.DATABASE_URI
+            
+            # 检查是否是 Windows 路径
             is_win = re.match("^[a-zA-Z]:.*", uri) is not None  # such as 'C:\\data', 'D:'
             # such as 'host:/data/'   (User may define short hostname by themselves or use localhost)
             is_nfs_or_win = re.match("^[^/]+:.+", uri) is not None
@@ -354,6 +361,12 @@ class QlibConfig(Config):
                 return Path(self.mount_path[freq])
             else:
                 raise NotImplementedError(f"This type of uri is not supported")
+
+    def get_uri_type(self, uri: Union[str, Path]):
+        """
+        get uri type
+        """
+        return self.DataPathManager.get_uri_type(uri)
 
     def set_mode(self, mode):
         # raise KeyError
@@ -426,7 +439,7 @@ class QlibConfig(Config):
         self.set_mode(default_conf)
         self.set_region(kwargs.get("region", self["region"] if "region" in self else REG_CN))
 
-        # @hugo 如果设置了 database_uri，检查是否需要注册 dolphindb_provider
+        # 如果设置了 database_uri，检查是否需要注册 dolphindb_provider
         if "database_uri" in kwargs:
             database_uri = kwargs["database_uri"]
             if database_uri is not None and database_uri.startswith("dolphindb://"):
