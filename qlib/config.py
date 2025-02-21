@@ -108,6 +108,10 @@ _default_config = {
     "expression_provider": "LocalExpressionProvider",
     "dataset_provider": "LocalDatasetProvider",
     "provider": "LocalProvider",
+    # database uri for database backend
+    "database_uri": None,
+    # dolphindb provider config
+    "dolphindb_provider": None,
     # config it in qlib.init()
     # "provider_uri" str or dict:
     #   # str
@@ -421,6 +425,21 @@ class QlibConfig(Config):
 
         self.set_mode(default_conf)
         self.set_region(kwargs.get("region", self["region"] if "region" in self else REG_CN))
+
+        # @hugo 如果设置了 database_uri，检查是否需要注册 dolphindb_provider
+        if "database_uri" in kwargs:
+            database_uri = kwargs["database_uri"]
+            if database_uri is not None and database_uri.startswith("dolphindb://"):
+                # 如果是 DolphinDB URI，自动配置 dolphindb_provider
+                if "dolphindb_provider" not in kwargs:
+                    kwargs["dolphindb_provider"] = {
+                        "class": "DolphinDBProvider",
+                        "module_path": "qlib.data.data",
+                        "kwargs": {"uri": database_uri}
+                    }
+                else:
+                    # 如果用户提供了自定义的 dolphindb_provider，只更新 uri
+                    kwargs["dolphindb_provider"]["kwargs"]["uri"] = database_uri
 
         for k, v in kwargs.items():
             if k not in self:
