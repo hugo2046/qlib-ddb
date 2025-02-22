@@ -17,12 +17,12 @@ import numpy as np
 class TableSchema(BaseModel):
     db_name: str
     table_name: str
-    columns: list[tuple[str, str]] # (列名, 类型)
+    columns: List[Tuple[str, str]] # (列名, 类型)
     partition_type: int  # ddb.settings.* ,为int类型
     partition_columns: str
     engine: str = "OLAP"
-    primary_key: str | None = None
-    partitions: list | None = None
+    primary_key: Optional[str] = None
+    partitions: Optional[List] = None
 
     @field_validator('partition_type')
     @classmethod
@@ -44,8 +44,9 @@ class QlibTableSchema:
 
     @classmethod
     def feature_daily(cls) -> TableSchema:
+        # storage_name,instrument,freq
         return TableSchema(
-            db_name="QlibFeatures",
+            db_name="QlibFeaturesDay",
             table_name="Features",
             columns=[
                 ("TRADE_DT", "DATE"),
