@@ -2,7 +2,7 @@
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2025-02-19 14:29:41
 LastEditors: hugo2046 shen.lan123@gmail.com
-LastEditTime: 2025-02-20 15:03:02
+LastEditTime: 2025-02-25 11:12:40
 Description: 用于连接ddb
 '''
 from urllib.parse import unquote, urlparse
@@ -46,7 +46,9 @@ class DDBClient:
         """创建单会话"""
         user, pwd, host, port = self._parse_uri()
         session = ddb.session(
-            protocol=ddb.settings.PROTOCOL_DDB, show_output=True  # 使用DDB协议
+            protocol=ddb.settings.PROTOCOL_DDB, 
+            show_output=True,  # 使用DDB协议
+            enableASYNC=False
         )
         session.connect(host=host, port=port, userid=user, password=pwd, reconnect=True)
         return session
