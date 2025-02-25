@@ -2,7 +2,7 @@
  * @Author: hugo2046 shen.lan123@gmail.com
  * @Date: 2025-02-18 11:26:04
  * @LastEditors: hugo2046 shen.lan123@gmail.com
- * @LastEditTime: 2025-02-25 14:26:28
+ * @LastEditTime: 2025-02-25 14:32:30
  * @FilePath: /workspace/qlib-ddb/README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -21,6 +21,8 @@ Recent released features
 
 ## TODO
 - [x] 接入DolphinDB
+- [ ] 优化对分钟及Tick级别的支持
+- [ ] 接入DolphinDB表达式计算
 
 
 ## 使说明
