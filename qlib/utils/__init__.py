@@ -22,7 +22,7 @@ import collections
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import List, Union, Optional, Callable
+from typing import List, Union, Optional, Callable,Iterable
 from packaging import version
 from ruamel.yaml import YAML
 from .file import (
@@ -301,6 +301,39 @@ def parse_field(field):
         field = re.sub(pattern, new, field)
     return field
 
+def extract_fields(expressions: Union[str, Iterable[str]]) -> List[str]:
+    """使用正则表达式从表达式字符串或表达式集合中提取字段名。
+    
+    参数:
+        expressions: 可以是以下类型:
+            - 单个表达式字符串，例如 "$S_DQ_ADJHIGH/REF($S_DQ_ADJLOW,4)"
+            - 表达式字符串的集合(list/tuple/set)，例如 ["$close", "$high/Ref($low,1)"]
+    
+    返回:
+        List[str]: 不包含 $ 前缀的唯一字段名列表
+    
+    示例:
+        >>> extract_fields("$close/$open")
+        ['close', 'open']
+        >>> extract_fields(["$close/$open", "$high/Ref($low,1)"])
+        ['close', 'open', 'high', 'low']
+    """
+    fields = set()
+    
+    if isinstance(expressions, str):
+        # 处理单个字符串
+        fields.update(re.findall(r'\$([A-Za-z_][A-Za-z0-9_]*)', expressions))
+    else:
+        # 处理可迭代对象
+        try:
+            for expr in expressions:
+                if not isinstance(expr, str):
+                    raise TypeError(f"Expected string, got {type(expr)}")
+                fields.update(re.findall(r'\$([A-Za-z_][A-Za-z0-9_]*)', expr))
+        except TypeError as e:
+            raise TypeError(f"Input must be a string or an iterable of strings, got {type(expressions)}") from e
+    
+    return list(fields)
 
 def compare_dict_value(src_data: dict, dst_data: dict):
     """Compare dict value

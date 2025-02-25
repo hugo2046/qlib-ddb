@@ -11,8 +11,8 @@ import queue
 import re
 from typing import List, Optional, Union
 
-
 from .backend.ddb_qlib import DDBConnectionSpec, DDBClient
+
 import numpy as np
 import pandas as pd
 
@@ -31,6 +31,7 @@ from ..utils import (
     init_instance_by_config,
     normalize_cache_fields,
     parse_field,
+    extract_fields,
     read_period_data,
     register_wrapper,
     time_to_slc_point,
@@ -618,7 +619,7 @@ class DatasetProvider(abc.ABC):
         if isinstance(instruments_d, dict):
             it = instruments_d.items()
         else:
-            it = zip(instruments_d, [None] * len(instruments_d))
+            it = zip(instruments_d, [None] * len(instruments_d))     
 
         inst_l = []
         task_l = []
@@ -647,13 +648,13 @@ class DatasetProvider(abc.ABC):
                 )(task_l),
             )
         )
-
+   
         new_data = dict()
         for inst in sorted(data.keys()):
             if len(data[inst]) > 0:
                 # NOTE: Python version >= 3.6; in versions after python3.6, dict will always guarantee the insertion order
                 new_data[inst] = data[inst]
-
+        
         if len(new_data) > 0:
             data = pd.concat(new_data, names=["instrument"], sort=False)
             data = DiskDatasetCache.cache_to_origin_data(data, column_names)
@@ -714,6 +715,7 @@ class DatasetProvider(abc.ABC):
                     _processor, accept_types=InstProcessor
                 )
                 data = _processor_obj(data, instrument=inst)
+
         return data
 
 
@@ -831,7 +833,7 @@ class LocalFeatureProvider(FeatureProvider, ProviderBackendMixin):
         self.remote = remote
         self.backend = backend
 
-    def feature(self, instrument, field, start_index, end_index, freq):
+    def feature(self, instrument, field, start_index:int, end_index:int, freq):
         # validate
         field = str(field)[1:]
         instrument = code_to_fname(instrument)
@@ -958,7 +960,7 @@ class LocalExpressionProvider(ExpressionProvider):
         expression = self.get_expression_instance(field)
         start_time = time_to_slc_point(start_time)
         end_time = time_to_slc_point(end_time)
-
+      
         # Two kinds of queries are supported
         # - Index-based expression: this may save a lot of memory because the datetime index is not saved on the disk
         # - Data with datetime index expression: this will make it more convenient to integrating with some existing databases
@@ -991,6 +993,7 @@ class LocalExpressionProvider(ExpressionProvider):
         except TypeError:
             pass
         if not series.empty:
+            # NOTE:这里是下标索引的所以起始位置需要注意不是日期格式
             series = series.loc[start_index:end_index]
         return series
 
@@ -1024,6 +1027,7 @@ class LocalDatasetProvider(DatasetProvider):
         freq="day",
         inst_processors=[],
     ):
+
         instruments_d = self.get_instruments_d(instruments, freq)
         column_names = self.get_column_names(fields)
         if self.align_time:
@@ -1039,6 +1043,14 @@ class LocalDatasetProvider(DatasetProvider):
                 )
             start_time = cal[0]
             end_time = cal[-1]
+
+        # 如果是调用本地数据库
+        if C.get("database_uri", None) is not None:
+            # 如果是dolphindb则一次性查询并加入缓存，避免后续重复查询影响效率
+            uri:str = C.get("database_uri")
+            if uri.startswith("dolphindb://"):
+                self._load_and_cache_dolphindb_data(instruments_d, column_names, start_time, end_time, freq)
+             
         data = self.dataset_processor(
             instruments_d,
             column_names,
@@ -1047,7 +1059,7 @@ class LocalDatasetProvider(DatasetProvider):
             freq,
             inst_processors=inst_processors,
         )
-
+        
         return data
 
     @staticmethod
@@ -1088,6 +1100,53 @@ class LocalDatasetProvider(DatasetProvider):
         """
         for field in column_names:
             ExpressionD.expression(inst, field, start_time, end_time, freq)
+
+    def _load_and_cache_dolphindb_data(self, instruments_d, column_names, start_time, end_time, freq):
+        """从DolphinDB加载数据并缓存
+        FIXME:如果是分钟或者Tick会有问题需要解决.
+        Args:
+            instruments_d: 股票代码列表
+            column_names: 字段名称列表
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 数据频率
+        
+        Returns:
+            None
+        """
+        base_fields = extract_fields(normalize_cache_fields(column_names))
+        
+        # 格式化时间
+        if (start_time is not None) or (end_time is not None):
+            fmt = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
+            start_time = pd.to_datetime(start_time).strftime(fmt)
+            end_time = pd.to_datetime(end_time).strftime(fmt)
+        
+        # 查询数据
+        df = DolphinDB.loadTable("Features", f"dfs://QlibFeatures{freq.title()}") \
+            .select(f"TRADE_DT,S_INFO_WINDCODE,{','.join(base_fields)}") \
+            .where(f"TRADE_DT between pair({start_time},{end_time}),S_INFO_WINDCODE in {instruments_d}") \
+            .toDF()
+        
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(f"查询结果需要为 DataFrame, 但获得 {type(df)}")
+        if df.empty:
+            raise ValueError("查询结果为空")
+        
+        # 处理并缓存数据
+        for expres_fields in column_names:
+            base_fields = extract_fields(normalize_cache_fields(column_names))
+            _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
+            lft_etd, rght_etd = eval(parse_field(expres_fields)).get_extended_window_size()
+            query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
+            
+            for inst, df in df.groupby("S_INFO_WINDCODE"):
+                for field, ser in df.items():
+                    if field in base_fields:
+                        cache_key = f"${field}", inst, query_start, query_end, freq
+                        ser = ser.reset_index(drop=True)
+                        ser.index = ser.index + start_index
+                        H["f"][cache_key] = ser
 
 
 class ClientCalendarProvider(CalendarProvider):
@@ -1439,7 +1498,9 @@ class ClientProvider(BaseProvider):
 
 class DolphinDBProvider(BaseProvider):
     """
-    qlib的高并发会导致大量client的实例,建立一个公用的client,所有的查询均在这个client中实现
+    DolphinDB数据提供者，支持单个和批量特征加载。
+    当在qlib.init中提供database_uri时，将使用数据库查询进行数据检索。
+    否则，将回退到默认的并行数据提取方法。
     """
 
     def __init__(self, uri="dolphindb://admin:123456@127.0.0.1:8848"):
@@ -1449,7 +1510,10 @@ class DolphinDBProvider(BaseProvider):
         config = DDBConnectionSpec(uri=uri)
         # 创建连接管理器
         connector = DDBClient(config)
+        # 创建表操作对象
         self.client = connector.session
+      
+        
 
 
 import sys

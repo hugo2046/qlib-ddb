@@ -253,7 +253,6 @@ class Feature(Expression):
     def _load_internal(self, instrument, start_index, end_index, freq):
         # load
         from .data import FeatureD  # pylint: disable=C0415
-
         return FeatureD.feature(instrument, str(self), start_index, end_index, freq)
 
     def get_longest_back_rolling(self):
