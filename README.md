@@ -2,7 +2,7 @@
  * @Author: hugo2046 shen.lan123@gmail.com
  * @Date: 2025-02-18 11:26:04
  * @LastEditors: hugo2046 shen.lan123@gmail.com
- * @LastEditTime: 2025-02-25 14:32:30
+ * @LastEditTime: 2025-02-26 17:20:38
  * @FilePath: /workspace/qlib-ddb/README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -57,6 +57,13 @@ create_instrument_table(uri)
 # 创建交易日历表
 create_calendar_table(uri)
 ```
+或者直接使用脚本,这样直接使用ddb默认连接创建，也可以使用`--ddb_uri`参数指定
+
+```bash
+cd /qlib-ddb/examples/初始创建ddb数据库
+python test_ddb_op.py --clean_db True
+```
+
 
 **导入数据**
 如果是WIND数据库可以直接从mysql同步过来
@@ -70,6 +77,12 @@ mysql_uri: str = "mysql+mysqlconnector://root:123456@localhost:3306/windDB"
 # 测试导入初始数据
 init_qlib_ddb_from_mysql(ddb_uri, mysql_uri)
 ```
+或者使用脚本从WIND数据库同步数据到DolphinDB数据库,如果没参数则使用默认连接,这里有两个参数`--ddb_uri`和`--mysql_uri`,可以自行指定。
+```bash
+cd /qlib-ddb/examples/初始创建ddb数据库
+python syn_mysql_to_ddb.py 
+```
+
 
 ### 4.使用Qlib
 
