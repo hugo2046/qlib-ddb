@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator, validate_arguments
 
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .ddb_operator import DDBTableOperator
-from .schemas import QlibTableSchema
+from .schemas import QlibTableSchema,FIELDS_MAPPING
 from .utils import convert_wind_date_to_datetime
 
 class MySQLConnectionSpec(BaseModel):
@@ -209,9 +209,8 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         :return: 所有列名的字符串和列名到类型的字典映射
         :rtype: tuple
         """
-        cols = schema_func().columns
-        all_cols = ",".join(col[0] for col in cols)
-        name_type = dict(cols)
+        all_cols = ",".join(schema_func().map_columns_to_fields())
+        name_type = dict(schema_func().columns)
         return all_cols, name_type
     
     def _sync_table(schema_func, table_name, where_clause=""):
@@ -232,6 +231,8 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         )
 
         data = bridge.load_table(query)
+        if table_name == "ASHAREEODPRICES":
+            data = data.rename(columns=FIELDS_MAPPING)
 
         convert_wind_date_to_datetime(data, name_type, inplace=True)
 
