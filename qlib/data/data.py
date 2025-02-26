@@ -1114,8 +1114,13 @@ class LocalDatasetProvider(DatasetProvider):
         Returns:
             None
         """
-        base_fields = extract_fields(normalize_cache_fields(column_names))
-        
+        from tqdm import tqdm
+
+        # 获取基础数据字段
+        base_fields:List[str]  = extract_fields(normalize_cache_fields(column_names))
+        if not base_fields:
+            raise ValueError("No valid fields found in column_names")
+
         # 格式化时间
         if (start_time is not None) or (end_time is not None):
             fmt = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
@@ -1128,26 +1133,44 @@ class LocalDatasetProvider(DatasetProvider):
             .where(f"TRADE_DT between pair({start_time},{end_time}),S_INFO_WINDCODE in {instruments_d}") \
             .toDF()
         
+        # 获取全部日期
+        calender:List[pd.Timestamp] = Cal.calendar()
+        length:int = len(calender)
+        index_mapping:Dict = dict(zip(calender,np.arange(length)))
+
+        # 日期转为下标
+        df.index =  df['TRADE_DT'].map(index_mapping)
+
         if not isinstance(df, pd.DataFrame):
             raise ValueError(f"查询结果需要为 DataFrame, 但获得 {type(df)}")
         if df.empty:
             raise ValueError("查询结果为空")
-        
-        # 处理并缓存数据
-        for expres_fields in column_names:
-            base_fields = extract_fields(normalize_cache_fields(column_names))
-            _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
+    
+        # 分组
+        grouped = df.groupby("S_INFO_WINDCODE")[base_fields]
+
+        _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
+
+        for expres_fields in tqdm(column_names,desc="处理特征缓存..."):
+            
+            # 可能有多个表达式，每个表达式的get_extended_window_size结果不同故需要遍历
             lft_etd, rght_etd = eval(parse_field(expres_fields)).get_extended_window_size()
             query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
             
-            for inst, df in df.groupby("S_INFO_WINDCODE"):
-                for field, ser in df.items():
-                    if field in base_fields:
+            # 处理每个股票
+            for inst in instruments_d:
+                if inst in grouped.groups:
+                    # 缓存有查询结果部分
+                    slice_df = grouped.get_group(inst)
+                    for field in base_fields:
+                        ser = slice_df[field].reset_index(drop=True)
                         cache_key = f"${field}", inst, query_start, query_end, freq
-                        ser = ser.reset_index(drop=True)
-                        ser.index = ser.index + start_index
                         H["f"][cache_key] = ser
-
+                else:
+                    # 缓存无查询结果部分
+                    for field in base_fields:
+                        cache_key = f"${field}", inst, query_start, query_end, freq
+                        H["f"][cache_key] = pd.Series(dtype=np.float32)
 
 class ClientCalendarProvider(CalendarProvider):
     """Client calendar data provider class
