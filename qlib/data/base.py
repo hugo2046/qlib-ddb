@@ -183,12 +183,13 @@ class Expression(abc.ABC):
         """
         from .cache import H  # pylint: disable=C0415
 
-        # cache
-        cache_key = str(self), instrument, start_index, end_index, *args
+        cache_key = (str(self), instrument, start_index, end_index, *args)
         if cache_key in H["f"]:
             return H["f"][cache_key]
+
         if start_index is not None and end_index is not None and start_index > end_index:
-            raise ValueError("Invalid index range: {} {}".format(start_index, end_index))
+            raise ValueError(f"Invalid index range: {start_index} {end_index}")
+
         try:
             series = self._load_internal(instrument, start_index, end_index, *args)
         except Exception as e:
@@ -198,6 +199,7 @@ class Expression(abc.ABC):
                 f"error info: {str(e)}"
             )
             raise
+
         series.name = str(self)
         H["f"][cache_key] = series
         return series
@@ -235,6 +237,8 @@ class Expression(abc.ABC):
         raise NotImplementedError("This function must be implemented in your newly defined feature")
 
 
+
+
 class Feature(Expression):
     """Static Expression
 
@@ -253,6 +257,14 @@ class Feature(Expression):
     def _load_internal(self, instrument, start_index, end_index, freq):
         # load
         from .data import FeatureD  # pylint: disable=C0415
+        from ..config import C  
+        from .cache import H
+        
+        if C.get("database_uri", "").startswith("dolphindb://"):
+            ddb_key = (str(self), instrument, freq)
+            if ddb_key in H["f"]:
+                return H["f"][ddb_key].loc[start_index:end_index]
+
         return FeatureD.feature(instrument, str(self), start_index, end_index, freq)
 
     def get_longest_back_rolling(self):
@@ -278,3 +290,4 @@ class ExpressionOps(Expression):
     This kind of feature will use operator for feature
     construction on the fly.
     """
+    pass

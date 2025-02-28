@@ -9,7 +9,7 @@ import bisect
 import copy
 import queue
 import re
-from typing import List, Optional, Union
+from typing import List, Optional, Union,Dict
 
 from .backend.ddb_qlib import DDBConnectionSpec, DDBClient
 
@@ -637,7 +637,7 @@ class DatasetProvider(abc.ABC):
                     inst_processors,
                 )
             )
-
+     
         data = dict(
             zip(
                 inst_l,
@@ -648,7 +648,7 @@ class DatasetProvider(abc.ABC):
                 )(task_l),
             )
         )
-   
+
         new_data = dict()
         for inst in sorted(data.keys()):
             if len(data[inst]) > 0:
@@ -1045,12 +1045,10 @@ class LocalDatasetProvider(DatasetProvider):
             end_time = cal[-1]
 
         # 如果是调用本地数据库
-        if C.get("database_uri", None) is not None:
+        if C.get("database_uri", "").startswith("dolphindb://"):
             # 如果是dolphindb则一次性查询并加入缓存，避免后续重复查询影响效率
-            uri:str = C.get("database_uri")
-            if uri.startswith("dolphindb://"):
-                self._load_and_cache_dolphindb_data(instruments_d, column_names, start_time, end_time, freq)
-             
+            self._load_and_cache_dolphindb_data(instruments_d, column_names, start_time, end_time, freq)
+    
         data = self.dataset_processor(
             instruments_d,
             column_names,
@@ -1101,7 +1099,7 @@ class LocalDatasetProvider(DatasetProvider):
         for field in column_names:
             ExpressionD.expression(inst, field, start_time, end_time, freq)
 
-    def _load_and_cache_dolphindb_data(self, instruments_d, column_names, start_time, end_time, freq):
+    def _load_and_cache_dolphindb_data(self, instruments_d:Union[Dict[str,str],List[str]], column_names:List[str], start_time, end_time, freq):
         """从DolphinDB加载数据并缓存
         FIXME:如果是分钟或者Tick会有问题需要解决.
         Args:
@@ -1115,6 +1113,8 @@ class LocalDatasetProvider(DatasetProvider):
             None
         """
         from tqdm import tqdm
+        if isinstance(instruments_d, dict):
+            instruments_d:List[str] = list(instruments_d.keys())
 
         # 获取基础数据字段
         base_fields:List[str]  = extract_fields(normalize_cache_fields(column_names))
@@ -1128,9 +1128,9 @@ class LocalDatasetProvider(DatasetProvider):
             end_time = pd.to_datetime(end_time).strftime(fmt)
         
         # 查询数据
-        df = DolphinDB.loadTable("Features", f"dfs://QlibFeatures{freq.title()}") \
-            .select(f"TRADE_DT,S_INFO_WINDCODE,{','.join(base_fields)}") \
-            .where(f"TRADE_DT between pair({start_time},{end_time}),S_INFO_WINDCODE in {instruments_d}") \
+        df:pd.DataFrame = DolphinDB.loadTable("Features", f"dfs://QlibFeatures{freq.title()}") \
+            .select(f"date,code,{','.join(base_fields)}") \
+            .where(f"date between pair({start_time},{end_time}),code in {instruments_d}") \
             .toDF()
         
         # 获取全部日期
@@ -1139,38 +1139,33 @@ class LocalDatasetProvider(DatasetProvider):
         index_mapping:Dict = dict(zip(calender,np.arange(length)))
 
         # 日期转为下标
-        df.index =  df['TRADE_DT'].map(index_mapping)
-
+        df.index =  pd.Index(df['date'].map(index_mapping))
         if not isinstance(df, pd.DataFrame):
             raise ValueError(f"查询结果需要为 DataFrame, 但获得 {type(df)}")
         if df.empty:
             raise ValueError("查询结果为空")
     
         # 分组
-        grouped = df.groupby("S_INFO_WINDCODE")[base_fields]
-
+        grouped = df.groupby("code")[base_fields]
         _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
+        idx = pd.RangeIndex(start_index,end_index)
+        # print(df.head(3))
+        # 根据基础字段+code+freq构成key存入全部查询到的数据
+        # print("将ddb查询结果写入缓存H中")
+        for inst in instruments_d:
+            if inst in grouped.groups:
+                # 缓存有查询结果部分
+                slice_df = grouped.get_group(inst)
+                for field in base_fields:
+                    cache_key = f"${field}", inst, freq
+                    H["f"][cache_key] = slice_df[field].reindex(idx)
+            else:
+                # 缓存无查询结果部分
+                for field in base_fields:
+                    cache_key = f"${field}", inst, freq
+                    H["f"][cache_key] = pd.Series(dtype=np.float32)
 
-        for expres_fields in tqdm(column_names,desc="处理特征缓存..."):
-            
-            # 可能有多个表达式，每个表达式的get_extended_window_size结果不同故需要遍历
-            lft_etd, rght_etd = eval(parse_field(expres_fields)).get_extended_window_size()
-            query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
-            
-            # 处理每个股票
-            for inst in instruments_d:
-                if inst in grouped.groups:
-                    # 缓存有查询结果部分
-                    slice_df = grouped.get_group(inst)
-                    for field in base_fields:
-                        ser = slice_df[field].reset_index(drop=True)
-                        cache_key = f"${field}", inst, query_start, query_end, freq
-                        H["f"][cache_key] = ser
-                else:
-                    # 缓存无查询结果部分
-                    for field in base_fields:
-                        cache_key = f"${field}", inst, query_start, query_end, freq
-                        H["f"][cache_key] = pd.Series(dtype=np.float32)
+        del df
 
 class ClientCalendarProvider(CalendarProvider):
     """Client calendar data provider class

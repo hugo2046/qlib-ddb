@@ -347,14 +347,10 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
         if self.field not in ddb_fields:
             raise KeyError(f"field {self.field} not exists")
 
-        # sql: str = (
-        #     f"select count({self.field}) from {self.ddb_table} where S_INFO_WINDCODE=='{self.instrument}'"
-        # )
-
         df = (
             DolphinDB.loadTable(self.table_name, self.db_path)
             .select(f"count({self.field})")
-            .where(f"S_INFO_WINDCODE=='{self.instrument}'")
+            .where(f"code=='{self.instrument}'")
             .toDF()
         )
         if df.empty:
@@ -377,13 +373,10 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
         if not self.has_field:
             return None
 
-        # sql = f"""SELECT date(min(TRADE_DT)) FROM {self.ddb_table} where S_INFO_WINDCODE = '{self.instrument}';"""
-
-        # df = DolphinDB.run(sql)
         df = (
             DolphinDB.loadTable(self.table_name, self.db_path)
-            .select("date(min(TRADE_DT))")
-            .where(f"S_INFO_WINDCODE=='{self.instrument}'")
+            .select("date(min(date))")
+            .where(f"code=='{self.instrument}'")
             .toDF()
         )
         if df.empty:
@@ -417,13 +410,10 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
                 "%Y.%m.%d"
             )
 
-            # sql = f"select {self.field} from {self.ddb_table} where S_INFO_WINDCODE='{self.instrument}' and TRADE_DT={watch_dt};"
-
-            # df = DolphinDB.run(sql)
             df = (
                 DolphinDB.loadTable(self.table_name, self.db_path)
                 .select(self.field)
-                .where(f"S_INFO_WINDCODE=='{self.instrument}' and TRADE_DT=={watch_dt}")
+                .where(f"code=='{self.instrument}' and date=='{watch_dt}'")
                 .toDF()
             )
 
@@ -443,14 +433,12 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
             # end_id = end_index - self.storage_start_index + 1
             start_dt = self.calendar[si].strftime("%Y.%m.%d")
             end_dt = self.calendar[end_index].strftime("%Y.%m.%d")
-            # sql = f"""SELECT {self.field} FROM {self.ddb_table} where S_INFO_WINDCODE='{self.instrument}' and TRADE_DT between pair({start_dt},{end_dt});"""
 
-            # df = DolphinDB.run(sql)
             df = (
                 DolphinDB.loadTable(self.table_name, self.db_path)
                 .select(self.field)
                 .where(
-                    f"S_INFO_WINDCODE=='{self.instrument}' and TRADE_DT between pair({start_dt},{end_dt})"
+                    f"code=='{self.instrument}' and date between pair({start_dt},{end_dt})"
                 )
                 .toDF()
             )
@@ -464,14 +452,10 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
 
     def __len__(self) -> int:
 
-        # sql = f"select count(*) from {self.ddb_table} where S_INFO_WINDCODE='{self.instrument}'"
-
-        # df = DolphinDB.run(sql)
-
         df = (
             DolphinDB.loadTable(self.table_name, self.db_path)
             .select("count(*)")
-            .where(f"S_INFO_WINDCODE=='{self.instrument}'")
+            .where(f"code=='{self.instrument}'")
             .toDF()
         )
         if df.empty:
