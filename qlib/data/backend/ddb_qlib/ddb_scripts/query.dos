@@ -1,0 +1,94 @@
+/*
+* @Author: Hugo
+* @Date: 2024-12-05 10:45:18
+ * @LastEditors: shen.lan123@gmail.com
+ * @LastEditTime: 2025-03-03 13:11:21
+* @Description: 查询相关函数
+*/
+
+/*
+* 创建日期筛选
+* @param dateName 日期字段名
+* @param start_dt 开始日期
+* @param end_dt 结束日期
+*/
+def CreateDateRange(dateName,start_dt,end_dt){
+
+    return expr(sqlCol(dateName),between,pair(start_dt,end_dt));
+
+};
+
+/*
+* 根据代码创建数据源
+* @param db_path 数据库路径
+* @param table_name 表名
+* @param column_name 列名，默认为`code
+* @return 重新分区的数据源
+*/
+def CreateDSByCode(db_path,table_name,column_name=`code){
+
+    tb = loadTable("dfs://"+db_path,table_name);
+    return repartitionDS(<select * from tb>, column_name,HASH,50);
+};
+
+
+/*
+* 创建日期筛选
+* @param db_path 数据库路径
+* @param table_name 表名
+* @param start_time 开始时间
+* @param end_time 结束时间
+* @param column_name 日期字段名
+* @return 重新分区的数据集
+*/
+def CreateDSByDate(db_path,table_name,start_time,end_time,column_name=`date){
+
+    offset_date = temporalAdd(end_time,1,`SSE);
+    tb = loadTable("dfs://"+db_path,table_name);
+    return repartitionDS(<select * from tb>, column_name,RANGE,[start_time,offset_date]);
+};
+
+
+/*
+* 计算特征
+* @param tb 数据表
+* @param featureDict 特征字典，键为特征表达式，值为特征别名
+* @param instruemnts 证券代码列表
+* @param start_date 开始日期
+* @param end_date 结束日期
+* @return 返回计算后的特征数据表
+*/
+def CalcFeatures(tb,featureDict,instruemnts,start_date,end_date){
+
+    featureExpr = sqlCol(`code`date).append!(sqlColAlias(parseExpr(featureDict.keys()),featureDict.values()));
+    
+    whereCond = [CreateDateRange(`date,start_date,end_date),expr(sqlCol(`code),in,instruemnts)];
+    // 使用context by 默认使用code分组
+    return sql(select=featureExpr,from=tb,where=whereCond,groupBy=sqlCol(`code),groupFlag=0,csort=sqlCol(`date)).eval();
+};
+
+
+/*
+* Perform feature engineering on the given instruments.
+* @param instruemnts List of instruments to process.
+* @param featureDict Dictionary of features to calculate.
+* @param start_time Start time for the data selection.
+* @param end_time End time for the data selection.
+* @param db_path Path to the database.
+* @param table_name Name of the table in the database.
+* @param use_code Boolean flag to determine whether to use code for data selection.
+* @param column_name Name of the column to use for code-based data selection (default is `code).
+* @return Result of the feature engineering process.
+*/
+def FeatureEngineering(instruemnts,featureDict,start_time,end_time,db_path,table_name,mr_by_code=true,column_name=`code){
+
+    if (mr_by_code){
+        ds = CreateDSByCode(db_path,table_name,column_name);
+    };
+    else{
+        ds = CreateDSByDate(db_path,table_name,start_time,end_time,column_name);
+    };
+    return mr(ds, CalcFeatures{,featureDict,instruemnts,start_time,end_time}, , unionAll{, false});
+
+};
+

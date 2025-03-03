@@ -9,9 +9,14 @@ import bisect
 import copy
 import queue
 import re
-from typing import List, Optional, Union,Dict
+from typing import List, Optional, Union, Dict,Tuple
 
-from .backend.ddb_qlib import DDBConnectionSpec, DDBClient
+from .backend.ddb_qlib import (
+    DDBConnectionSpec,
+    DDBClient,
+    register_ddb_functions_to_qlib,
+    ddb_compute_features,
+)
 
 import numpy as np
 import pandas as pd
@@ -31,7 +36,6 @@ from ..utils import (
     init_instance_by_config,
     normalize_cache_fields,
     parse_field,
-    extract_fields,
     read_period_data,
     register_wrapper,
     time_to_slc_point,
@@ -619,7 +623,7 @@ class DatasetProvider(abc.ABC):
         if isinstance(instruments_d, dict):
             it = instruments_d.items()
         else:
-            it = zip(instruments_d, [None] * len(instruments_d))     
+            it = zip(instruments_d, [None] * len(instruments_d))
 
         inst_l = []
         task_l = []
@@ -637,7 +641,7 @@ class DatasetProvider(abc.ABC):
                     inst_processors,
                 )
             )
-     
+
         data = dict(
             zip(
                 inst_l,
@@ -654,7 +658,7 @@ class DatasetProvider(abc.ABC):
             if len(data[inst]) > 0:
                 # NOTE: Python version >= 3.6; in versions after python3.6, dict will always guarantee the insertion order
                 new_data[inst] = data[inst]
-        
+
         if len(new_data) > 0:
             data = pd.concat(new_data, names=["instrument"], sort=False)
             data = DiskDatasetCache.cache_to_origin_data(data, column_names)
@@ -833,7 +837,7 @@ class LocalFeatureProvider(FeatureProvider, ProviderBackendMixin):
         self.remote = remote
         self.backend = backend
 
-    def feature(self, instrument, field, start_index:int, end_index:int, freq):
+    def feature(self, instrument, field, start_index: int, end_index: int, freq):
         # validate
         field = str(field)[1:]
         instrument = code_to_fname(instrument)
@@ -960,7 +964,7 @@ class LocalExpressionProvider(ExpressionProvider):
         expression = self.get_expression_instance(field)
         start_time = time_to_slc_point(start_time)
         end_time = time_to_slc_point(end_time)
-      
+
         # Two kinds of queries are supported
         # - Index-based expression: this may save a lot of memory because the datetime index is not saved on the disk
         # - Data with datetime index expression: this will make it more convenient to integrating with some existing databases
@@ -1047,8 +1051,10 @@ class LocalDatasetProvider(DatasetProvider):
         # 如果是调用本地数据库
         if C.get("database_uri", "").startswith("dolphindb://"):
             # 如果是dolphindb则一次性查询并加入缓存，避免后续重复查询影响效率
-            self._load_and_cache_dolphindb_data(instruments_d, column_names, start_time, end_time, freq)
-    
+            return self._calc_features_us_ddb(
+                instruments_d, column_names, start_time, end_time, freq
+            )
+
         data = self.dataset_processor(
             instruments_d,
             column_names,
@@ -1057,7 +1063,7 @@ class LocalDatasetProvider(DatasetProvider):
             freq,
             inst_processors=inst_processors,
         )
-        
+
         return data
 
     @staticmethod
@@ -1099,73 +1105,158 @@ class LocalDatasetProvider(DatasetProvider):
         for field in column_names:
             ExpressionD.expression(inst, field, start_time, end_time, freq)
 
-    def _load_and_cache_dolphindb_data(self, instruments_d:Union[Dict[str,str],List[str]], column_names:List[str], start_time, end_time, freq):
-        """从DolphinDB加载数据并缓存
-        FIXME:如果是分钟或者Tick会有问题需要解决.
-        Args:
-            instruments_d: 股票代码列表
-            column_names: 字段名称列表
-            start_time: 开始时间
-            end_time: 结束时间
-            freq: 数据频率
-        
-        Returns:
-            None
-        """
-        from tqdm import tqdm
+    # CHANGED:2025-03-03
+    # def _load_and_cache_dolphindb_data(
+    #     self,
+    #     instruments_d: Union[Dict[str, str], List[str]],
+    #     column_names: List[str],
+    #     start_time,
+    #     end_time,
+    #     freq,
+    # ):
+    #     """从DolphinDB加载数据并缓存
+    #     FIXME:如果是分钟或者Tick会有问题需要解决.
+    #     Args:
+    #         instruments_d: 股票代码列表
+    #         column_names: 字段名称列表
+    #         start_time: 开始时间
+    #         end_time: 结束时间
+    #         freq: 数据频率
+
+    #     Returns:
+    #         None
+    #     """
+    #     from tqdm import tqdm
+
+    #     if isinstance(instruments_d, dict):
+    #         instruments_d: List[str] = list(instruments_d.keys())
+
+    #     # 获取基础数据字段
+    #     base_fields: List[str] = extract_fields(normalize_cache_fields(column_names))
+    #     if not base_fields:
+    #         raise ValueError("No valid fields found in column_names")
+
+    #     # 格式化时间
+    #     if (start_time is not None) or (end_time is not None):
+    #         fmt = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
+    #         start_time = pd.to_datetime(start_time).strftime(fmt)
+    #         end_time = pd.to_datetime(end_time).strftime(fmt)
+
+    #     # 查询数据
+    #     df: pd.DataFrame = (
+    #         DolphinDB.loadTable("Features", f"dfs://QlibFeatures{freq.title()}")
+    #         .select(f"date,code,{','.join(base_fields)}")
+    #         .where(
+    #             f"date between pair({start_time},{end_time}),code in {instruments_d}"
+    #         )
+    #         .toDF()
+    #     )
+
+    #     # 获取全部日期
+    #     calender: List[pd.Timestamp] = Cal.calendar()
+    #     length: int = len(calender)
+    #     index_mapping: Dict = dict(zip(calender, np.arange(length)))
+
+    #     # 日期转为下标
+    #     df.index = pd.Index(df["date"].map(index_mapping))
+    #     if not isinstance(df, pd.DataFrame):
+    #         raise ValueError(f"查询结果需要为 DataFrame, 但获得 {type(df)}")
+    #     if df.empty:
+    #         raise ValueError("查询结果为空")
+
+    #     # 分组
+    #     grouped = df.groupby("code")[base_fields]
+    #     _, _, start_index, end_index = Cal.locate_index(
+    #         start_time, end_time, freq=freq, future=False
+    #     )
+    #     idx = pd.RangeIndex(start_index, end_index)
+    #     # print(df.head(3))
+    #     # 根据基础字段+code+freq构成key存入全部查询到的数据
+    #     # print("将ddb查询结果写入缓存H中")
+    #     for inst in instruments_d:
+    #         if inst in grouped.groups:
+    #             # 缓存有查询结果部分
+    #             slice_df = grouped.get_group(inst)
+    #             for field in base_fields:
+    #                 cache_key = f"${field}", inst, freq
+    #                 H["f"][cache_key] = slice_df[field].reindex(idx)
+    #         else:
+    #             # 缓存无查询结果部分
+    #             for field in base_fields:
+    #                 cache_key = f"${field}", inst, freq
+    #                 H["f"][cache_key] = pd.Series(dtype=np.float32)
+
+    #     del df
+
+    def _calc_features_us_ddb(
+        self,
+        instruments_d: Union[Dict[str, str], List[str]],
+        column_names: List[str],
+        start_time,
+        end_time,
+        freq,
+    ):
+        def __get_max_extended_window_size(expressions: List[str]) -> Tuple[int, int]:
+            """
+            获取表达式列表中扩展窗口大小的最大值。
+
+            :param expressions: 表达式字符串列表
+            :type expressions: List[str]
+            :return: 扩展窗口大小的最大值，包含两个整数值的元组
+            :rtype: Tuple[int, int]
+            """
+            window_size: np.ndarray = np.array(
+                [eval(parse_field(i)).get_extended_window_size() for i in expressions]
+            ).max(0)
+            return window_size[0], window_size[1]
+
         if isinstance(instruments_d, dict):
-            instruments_d:List[str] = list(instruments_d.keys())
+            instruments_d: List[str] = list(instruments_d.keys())
 
-        # 获取基础数据字段
-        base_fields:List[str]  = extract_fields(normalize_cache_fields(column_names))
-        if not base_fields:
-            raise ValueError("No valid fields found in column_names")
+        # 标准化表达式
+        normalize_column_names = normalize_cache_fields(column_names)
+        # 获取左右扩展窗口
+        lft_etd, rght_etd = __get_max_extended_window_size(normalize_column_names)
 
-        # 格式化时间
-        if (start_time is not None) or (end_time is not None):
-            fmt = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
-            start_time = pd.to_datetime(start_time).strftime(fmt)
-            end_time = pd.to_datetime(end_time).strftime(fmt)
-        
-        # 查询数据
-        df:pd.DataFrame = DolphinDB.loadTable("Features", f"dfs://QlibFeatures{freq.title()}") \
-            .select(f"date,code,{','.join(base_fields)}") \
-            .where(f"date between pair({start_time},{end_time}),code in {instruments_d}") \
-            .toDF()
-        
-        # 获取全部日期
-        calender:List[pd.Timestamp] = Cal.calendar()
-        length:int = len(calender)
-        index_mapping:Dict = dict(zip(calender,np.arange(length)))
+        # 默认需要对齐时间
+        _, _, start_index, end_index = Cal.locate_index(
+            start_time, end_time, freq=freq, future=False
+        )
+        query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
+        calender: List[pd.Timestamp] = Cal.calendar()
+        query_start, query_end = calender[query_start], calender[query_end]
 
-        # 日期转为下标
-        df.index =  pd.Index(df['date'].map(index_mapping))
-        if not isinstance(df, pd.DataFrame):
-            raise ValueError(f"查询结果需要为 DataFrame, 但获得 {type(df)}")
-        if df.empty:
-            raise ValueError("查询结果为空")
-    
-        # 分组
-        grouped = df.groupby("code")[base_fields]
-        _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
-        idx = pd.RangeIndex(start_index,end_index)
-        # print(df.head(3))
-        # 根据基础字段+code+freq构成key存入全部查询到的数据
-        # print("将ddb查询结果写入缓存H中")
-        for inst in instruments_d:
-            if inst in grouped.groups:
-                # 缓存有查询结果部分
-                slice_df = grouped.get_group(inst)
-                for field in base_fields:
-                    cache_key = f"${field}", inst, freq
-                    H["f"][cache_key] = slice_df[field].reindex(idx)
-            else:
-                # 缓存无查询结果部分
-                for field in base_fields:
-                    cache_key = f"${field}", inst, freq
-                    H["f"][cache_key] = pd.Series(dtype=np.float32)
+        # HACK:获取db_path和table_name的方式后续引用ddb_qlib/schemas.py中的方法
+        # 这样方式后续不够灵活,mr_by_code的参数等也不够灵活    
+        feature:pd.DataFrame = ddb_compute_features(
+            DolphinDB,
+            instruments_d,
+            normalize_column_names,
+            query_start,
+            query_end,
+            f"QlibFeatures{freq.title()}",
+            "Features",
+            False,
+            "date",
+            freq,
+        )
 
-        del df
+        if feature.empty:
+            return pd.DataFrame(
+                index=pd.MultiIndex.from_arrays(
+                    [[], []], names=("instrument", "datetime")
+                ),
+                columns=normalize_column_names,
+                dtype=np.float32,
+            )
+
+        feature.query("date >= @start_time and date <= @end_time", inplace=True)
+        feature.set_index(['code','date'], inplace=True)
+        feature.index.names=("instrument", "datetime")
+
+        return feature
+
+
 
 class ClientCalendarProvider(CalendarProvider):
     """Client calendar data provider class
@@ -1522,6 +1613,7 @@ class DolphinDBProvider(BaseProvider):
     """
 
     def __init__(self, uri="dolphindb://admin:123456@127.0.0.1:8848"):
+
         super().__init__()
         self.uri = uri
         # 初始化连接
@@ -1530,8 +1622,18 @@ class DolphinDBProvider(BaseProvider):
         connector = DDBClient(config)
         # 创建表操作对象
         self.client = connector.session
-      
-        
+        register_ddb_functions_to_qlib(self.client)
+
+    def features(
+        self,
+        instruments,
+        fields,
+        start_time,
+        end_time,
+        freq="day",
+        disk_cache=None,
+        inst_processors=[],
+    ): ...
 
 
 import sys

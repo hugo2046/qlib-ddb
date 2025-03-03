@@ -1,0 +1,74 @@
+/*
+ * @Author: Hugo
+ * @Date: 2024-12-05 10:45:18
+ * @LastEditors: shen.lan123@gmail.com
+ * @LastEditTime: 2025-03-02 13:32:36
+ * @Description: 实现与 qlib 兼容的滚动函数
+ */
+
+// 滚动分位数计算
+def rolling_quantile(series, window, q){
+    return moving(quantile{,q}, series, window);
+};
+
+// 滚动排名计算（百分比排名）
+def rolling_rank(series, window){
+    return mrank(series, true, window, percent=true);
+};
+
+// 滚动差分计算
+def rolling_delta(series, window){
+    return moving(difference, series, window);
+};
+
+// 计算 Beta 系数
+defg CalcBeta(y, x){
+    return std(y)\std(x) * corr(y, x);
+};
+
+// 计算R2决定系数
+defg CalcRsquare(y, x){
+    return pow(corr(y, x), 2);
+};
+
+// 计算回归残差和
+defg CalcResi(y, x=[]){
+    beta = CalcBeta(y,x);
+    alpha = avg(y) - beta * avg(x);
+    y_pred = alpha + beta * x;
+    return sum(y - y_pred);
+};
+
+// 为了兼容qlib表达x放到最后,给处理双变量留空间
+// 滚动斜率计算
+def Slope(y, window=5, x=[]){
+    if (size(x)==0){
+        x_ser = seq(0,size(y)-1);
+    };
+    else{
+        x_ser = x
+    }
+    return moving(CalcBeta, [y,x_ser], window); 
+};
+
+// 滚动 R2计算
+def Rsquare(y, window=5, x=[]){
+    if (size(x)==0){
+        x_ser = seq(0,size(y)-1);
+    };
+    else{
+        x_ser = x
+    };
+    return moving(CalcRsquare, (y, x_ser), window);
+};
+
+// 滚动残差计算
+def Resi(y, window=5, x=[]){
+    if (size(x)==0){
+        x_ser = seq(0,size(y)-1);
+    };
+    else{
+        x_ser = x;
+    };
+    return moving(CalcResi, (y, x_ser), window);
+};
