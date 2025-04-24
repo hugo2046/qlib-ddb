@@ -50,3 +50,5 @@ tags
 ./pretrain
 .idea/
 .aider*
+
+examples/test_ddb_src.dos
