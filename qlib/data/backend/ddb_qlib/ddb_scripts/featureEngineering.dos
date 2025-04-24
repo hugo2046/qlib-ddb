@@ -1,0 +1,337 @@
+/*
+* @Author: Hugo
+* @Date: 2024-12-05 10:45:18
+ * @LastEditors: hugo2046 shen.lan123@gmail.com
+ * @LastEditTime: 2025-04-24 12:05:30
+* @Description: 查询相关函数
+*/
+
+
+/**
+ * @brief 将矩阵转换为表格
+ * @details 此函数将输入矩阵转换为表格形式。首先提取矩阵的行名和列名，
+ *          然后将矩阵数据转换为表格，添加日期列(使用行名)，
+ *          接着对表格进行unpivot操作（将宽表转换为长表），
+ *          最后重命名列名（将'valueType'重命名为'code'，'value'重命名为'alpha'）
+ * 
+ * @param inputMatrix 输入矩阵，需要包含行名和列名
+ * @return table 转换后的表格，包含date、code和alpha三列
+ */
+def transMatrixToTable(inputMatrix,alphaName){
+    data = table(inputMatrix.rowNames() as date, inputMatrix).unpivot(`date, inputMatrix.columnNames()).rename!(`valueType`value, [`code,alphaName]);
+    return data;
+};
+
+
+/**
+ * @brief 获取多个表的所有唯一列名
+ * @param dfs 包含多个内存表的列表
+ * @return 所有表中的不重复列名列表
+ */
+def unionTableColumnNames(dfs){
+    // 初始化空列表用于存储列名
+    colNames = [];
+    
+    // 遍历每个表，提取其列名
+    for (df in dfs){
+        colNames.append!(df.columnNames());
+    };
+    
+    // 返回去重后的列名列表
+    return distinct(flatten(colNames));
+};
+
+
+/**
+ * @brief 拼接两个数据表
+ * @param dfs 包含两个内存表的列表
+ * @param how 连接类型，可选值为: "full"(全外连接),"left"(左连接),"right"(右连接),"inner"(内连接),"cross"(交叉连接),默认为"full"
+ * @return 连接后的表
+ */
+def append_df_by_code_and_date(dfs, how="full"){
+    
+    
+    // 验证连接类型参数
+    validJoinTypes = ["full", "left", "right", "inner", "cross"];
+    if (!(how in validJoinTypes)){
+        throw "连接类型必须是以下之一: full, left, right, inner, cross";
+    }
+    
+    if (size(dfs)==0){
+        throw "dfs为空!";
+    }
+    else if (size(dfs)==1){
+        return dfs[0];
+    }
+    else if (size(dfs)==2){
+
+        dfa = dfs[0];
+        dfb = dfs[1];
+        
+        // 检查每个表是否包含必要的列
+        if (!(("code" in dfa.columnNames()) and ("date" in dfa.columnNames()))){
+            throw "第一个表必须包含code和date列!";
+        };
+        if (!(("code" in dfb.columnNames()) and ("date" in dfb.columnNames()))){
+            throw "第二个表必须包含code和date列!";
+        };
+
+        fields = unionTableColumnNames(dfs);
+
+        // 根据连接类型执行不同的SQL查询
+        if (how == "full"){
+            return <select _$$fields from dfa full join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
+        }
+        else if (how == "left"){
+            return <select _$$fields from dfa left join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
+        }
+        else if (how == "right"){
+            return <select _$$fields from dfa right join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
+        }
+        else if (how == "inner"){
+            return <select _$$fields from dfa join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
+        }
+        else if (how == "cross"){
+            return <select _$$fields from dfa cross join dfb>.eval();
+        }
+    }
+    else{
+        throw "dfs的长度必须为1或者2!";
+    }
+    
+};
+
+
+/**
+ * 合并多个数据框（DataFrame）
+ * 
+ * 该函数接收一个数据框列表，将它们按照代码和日期合并成一个数据框。
+ * 如果输入列表为空，则抛出异常；如果列表只包含一个数据框，则直接返回该数据框。
+ * 当列表包含多个数据框时，从第一个开始，依次合并后续的数据框。
+ * 
+ * @param dfs - 包含多个数据框的列表/数组
+ * @return 合并后的数据框
+ * @throws 当输入列表为空时抛出异常
+ * @note 此函数依赖于 append_df_by_code_and_date 函数来执行两个数据框之间的合并操作
+ */
+def append_dfs(dfs, how="full"){
+
+    // 验证连接类型参数
+    validJoinTypes = ["full", "left", "right", "inner", "cross"];
+    if (!(how in validJoinTypes)){
+        throw "连接类型必须是以下之一: full, left, right, inner, cross";
+    };
+
+    if (size(dfs)==0){
+        throw "dfs为空!";
+    };
+    else if (size(dfs)==1){
+        return dfs[0];
+    };
+    // 处理多个表的情况
+    else {
+        // 从第一个表开始，逐步拼接后续的表
+        result = dfs[0];
+        
+        // 从第二个表开始，依次与累积结果进行拼接
+        for (i in 1..(size(dfs)-1)){
+            // 使用已有的 append_df_by_code_and_date 函数进行两表拼接
+            result = append_df_by_code_and_date([result, dfs[i]],how);
+        };
+        
+        return result;
+    };
+};
+
+/*
+* 创建日期映射字典
+* @param x 日期
+* @param TradeDays 交易日列表
+*/
+def mapTradeDay2Indx(x,TradeDays){
+    Length = size(TradeDays);
+    tradeDayMapping = dict(TradeDays,seq(0,Length-1));
+    
+    return tradeDayMapping[x]
+};
+
+
+/*
+* 创建日期筛选
+* @param dateName 日期字段名
+* @param start_dt 开始日期
+* @param end_dt 结束日期
+*/
+def CreateDateRange(dateName,start_dt,end_dt){
+
+    return expr(sqlCol(dateName),between,pair(start_dt,end_dt));
+
+};
+
+/*
+* 根据代码创建数据源
+* @param db_path 数据库路径
+* @param table_name 表名
+* @param column_name 列名，默认为`code
+* @return 重新分区的数据源
+*/
+def CreateDSByCode(db_path,table_name,column_name=`code){
+
+    tb = loadTable("dfs://" + db_path,table_name);
+    return repartitionDS(<select * from tb>, column_name,HASH,50);
+};
+
+
+/*
+* 创建日期筛选
+* @param db_path 数据库路径
+* @param table_name 表名
+* @param start_time 开始时间
+* @param end_time 结束时间
+* @param column_name 日期字段名
+* @return 重新分区的数据集
+*/
+def CreateDSByDate(db_path,table_name,start_time,end_time,column_name=`date){
+
+    offset_date = temporalAdd(end_time,1,`SSE);
+    tb = loadTable("dfs://"+db_path,table_name);
+    return repartitionDS(<select * from tb>, column_name,RANGE,[start_time,offset_date]);
+};
+
+
+/*
+* 计算特征
+* @param tb 数据表
+* @param featureDict 特征字典，键为特征表达式，值为特征别名
+* @param instruemnts 证券代码列表
+* @param start_date 开始日期
+* @param end_date 结束日期
+* @return 返回计算后的特征数据表
+*/
+def CalcFeatures(tb,featureDict,instruemnts,start_date,end_date){
+
+    featureExpr = sqlCol(`code`date).append!(sqlColAlias(parseExpr(featureDict.keys()),featureDict.values()));
+    
+    whereCond = [CreateDateRange(`date,start_date,end_date),expr(sqlCol(`code),in,instruemnts)];
+    // 使用context by 默认使用code分组
+    return sql(select=featureExpr,from=tb,where=whereCond,groupBy=sqlCol(`code),groupFlag=0,csort=sqlCol(`date)).eval();
+};
+
+/**
+ * 计算面板特征数据
+ *
+ * 该函数通过执行一系列表达式来计算金融数据的面板特征，并将结果合并为一个表格。
+ * 
+ * @param tb 输入数据表名
+ * @param expressions 表达式列表，每个表达式为文本格式
+ * @param baseFields 基础字段列表，如close、volume、open、high、low等
+ * @param instruemnts 证券代码列表
+ * @param start_date 开始日期
+ * @param end_date 结束日期
+ * @return 合并后的特征数据表
+ *
+ * 函数流程:
+ * 1. 从输入表中选取基础字段数据并按日期和证券代码过滤
+ * 2. 将基础字段数据转换为面板数据结构(panel)，其中索引为日期，列为证券代码
+ * 3. 逐个执行表达式列表中的表达式
+ * 4. 将每个表达式的结果转换为表格并合并
+ */
+def calcPanelFeatures(tb,expressions,baseFields,instruments,start_date,end_date){
+
+
+    // 添加错误参数检查
+    if(size(expressions) == 0) {
+        throw("表达式列表不能为空");
+    };
+    if(size(baseFields) == 0) {
+        throw("基础字段列表不能为空");
+    };
+    
+    fieldExpr = sqlCol(`date`code).append!(sqlCol(baseFields));
+    whereConditions = [expr(sqlCol(`date),between,pair(start_date,end_date)),expr(sqlCol(`code),in,instruments)];
+
+    try {
+        baseData = sql(select=fieldExpr,from=tb,where=whereConditions,orderBy=<date>).eval();
+        // 检查结果是否为空
+        if(baseData.rows() == 0) {
+            print("警告: 查询结果为空，请检查查询条件");
+            return table(100:0, [`date, `code], [DATE, SYMBOL]);
+        };
+
+    } catch(ex){
+        print("查询数据失败: " + ex);
+        return table(100:0, [`date, `code], [DATE, SYMBOL]);
+    };
+    
+
+    // 生成数据字典
+    // feilColDatas = dict(STRING,ANY,true);
+    colDatas = [];
+    for (col in baseFields){
+        // feilColDatas[col] = baseData[col]
+        colDatas.append!(baseData[col]);
+    };
+    // 数据字典 k基础字段,v-矩阵index为日期,columns-code
+    dates = baseData['date'];
+    codes = baseData['code'];
+    dataDict = dict(baseFields, panel(dates, codes, colDatas));
+    // 收集结果
+    dfs = [];
+
+    for (expression in expressions){
+        
+        try{
+            res = parseExpr(expression,dataDict).eval();
+            
+            // 检查结果是否为矩阵
+            if(res.rows()==0){
+                print("警告: 计算结果为空，请检查表达式: " + expression);
+                continue;
+            };
+            
+            dfs.append!(transMatrixToTable(res,regexReplace(regexReplace(expression,"\\s|\\)",""),",|\\(","_")));
+        
+        
+        } catch(ex){
+            print("计算表达式失败: " + expression + " 错误信息: " + ex);
+            placeholder = table(10:0,[`date,`code,expression], [DATE, SYMBOL, DOUBLE]);
+            dfs.append!(placeholder);
+        };
+     
+    };
+
+    // 检查是否有结果可合并
+    if(size(dfs) == 0) {
+        print("没有成功计算的表达式结果");
+        return table(100:0, [`date, `code], [DATE, SYMBOL]);
+    };
+    return append_dfs(reverse(dfs));
+}
+
+
+
+/*
+* 对给定的投资工具执行特征工程。
+* @param instruemnts 要处理的投资工具列表。
+* @param featureDict 要计算的特征字典。
+* @param start_time 数据选择的起始时间。
+* @param end_time 数据选择的结束时间。
+* @param db_path 数据库路径。
+* @param table_name 数据库中的表名。
+* @param mr_by_code 布尔标志，用于确定是否使用代码进行数据选择。
+* @param column_name 用于基于代码的数据选择的列名（默认为`code）。
+* @return 特征工程过程的结果。
+*/
+def FeatureEngineering(instruemnts,featureDict,start_time,end_time,db_path,table_name,mr_by_code=true,column_name=`code){
+
+    if (mr_by_code){
+        ds = CreateDSByCode(db_path,table_name,column_name);
+    };
+    else{
+        ds = CreateDSByDate(db_path,table_name,start_time,end_time,column_name);
+    };
+    return mr(ds, CalcFeatures{,featureDict,instruemnts,start_time,end_time}, , unionAll{, false});
+
+};
+
+
