@@ -1,0 +1,802 @@
+/* *
+*  @ Author: Hguo
+*  This module implements 158 alpha formulas in DolphinDB for quantitative investment library (Qlib).
+*  These alpha factors are designed for financial market data analysis and trading strategy development.
+*  The implementation leverages DolphinDB's high-performance computing capabilities for efficient factor calculation.
+*  The development of this module is based on day level market data.
+*  @ Last modification time: 2023.01.17
+*  @ DolphinDB server version: 2.00.9
+*  @ FileName: qlib158Alpha.dos
+*/
+
+// alpha1 ($close-$open)/$open
+def qlib158Alpha1(open, close) {
+    return (close - open) \ open
+}
+
+// alpha2 ($high-$low)/$open
+def qlib158Alpha2(open, high, low) {
+    return (high - low) \ open
+}
+
+// alpha3 (close-open)\(high-low+1e-12)
+def qlib158Alpha3(open, high, low, close) {
+    return (close - open) \ (high - low + 1e-12)
+}
+
+// ($high-Greater($open, $close))/$open
+def qlib158Alpha4(open, high, close) {
+    return (high - max(open, close)) \ open
+}
+
+// ($high-Greater($open, $close))/($high-$low+1e-12)
+def qlib158Alpha5(open, high, low, close) {
+    return (high - max(open, close)) \ (high - low + 1e-12)
+}
+
+// (Less($open, $close)-$low)/$open
+def qlib158Alpha6(open, low, close) {
+    return (min(open, close) - low) \ open
+}
+
+// (Less($open, $close)-$low)/($high-$low+1e-12)
+def qlib158Alpha7(open, high, low, close) {
+    return (min(open, close) - low) \ (high - low + 1e-12)
+}
+
+// (2*$close-$high-$low)/$open
+def qlib158Alpha8(open, high, low, close) {
+    return (2 * close - high - low) \ open
+}
+
+// (2*$close-$high-$low)/($high-$low+1e-12)'
+def qlib158Alpha9(open, high, low, close) {
+    return (2 * close - high - low) \ (high - low + 1e-12)
+}
+
+// $open/$close
+def qlib158Alpha10(open, close) {
+    return open \ close
+}
+
+// $high/$close
+def qlib158Alpha11(high, close) {
+    return high \ close
+}
+
+// $low/$close
+def qlib158Alpha12(low, close) {
+    return low \ close
+}
+
+// $vwap/$close
+def qlib158Alpha13(vwap, close) {
+    return vwap \ close
+}
+
+// move(close, 5)\\close
+def qlib158Alpha14(close) {
+    return move(close, 5) \ close
+}
+
+// Ref($close, 10)/$close
+def qlib158Alpha15(close) {
+    return move(close, 10) \ close
+}
+
+// Ref($close, 20)/$close
+def qlib158Alpha16(close) {
+    return move(close, 20) \ close
+}
+
+// Ref($close, 30)/$close
+def qlib158Alpha17(close) {
+    return move(close, 30) \ close
+}
+
+// Ref($close, 60)/$close
+def qlib158Alpha18(close) {
+    return move(close, 60) \ close
+}
+
+// Mean($close, 5)/$close
+def qlib158Alpha19(close) {
+    return mavg(close, 5) \ close
+}
+
+// Mean($close, 10)/$close
+def qlib158Alpha20(close) {
+    return mavg(close, 10) \ close
+}
+
+// Mean($close, 20)/$close
+def qlib158Alpha21(close) {
+    return mavg(close, 20) \ close
+}
+
+// Mean($close, 30)/$close
+def qlib158Alpha22(close) {
+    return mavg(close, 30) \ close
+}
+
+// Mean($close, 60)/$close
+def qlib158Alpha23(close) {
+    return mavg(close, 60) \ close
+}
+
+// Std($close, 5)/$close
+def qlib158Alpha24(close) {
+    return mstd(close, 5) \ close
+}
+
+// Std($close, 10)/$close
+def qlib158Alpha25(close) {
+    return mstd(close, 10) \ close
+}
+
+// Std($close, 20)/$close
+def qlib158Alpha26(close) {
+    return mstd(close, 20) \ close
+}
+
+// Std($close, 30)/$close
+def qlib158Alpha27(close) {
+    return mstd(close, 30) \ close
+}
+
+// Std($close, 60)/$close
+def qlib158Alpha28(close) {
+    return mstd(close, 60) \ close
+}
+
+// Slope($close, 5)/$close
+def qlib158Alpha29(close) {
+    return Slope(close, 5) \ close
+}
+
+// Slope($close, 10)/$close
+def qlib158Alpha30(close) {
+    return Slope(close, 10) \ close
+}
+
+// Slope($close, 20)/$close
+def qlib158Alpha31(close) {
+    return Slope(close, 20) \ close
+}
+
+// Slope($close, 30)/$close
+def qlib158Alpha32(close) {
+    return Slope(close, 30) \ close
+}
+
+// Slope($close, 60)/$close
+def qlib158Alpha33(close) {
+    return Slope(close, 60) \ close
+}
+
+// Rsquare($close, 5)
+def qlib158Alpha34(close) {
+    return Rsquare(close, 5)
+}
+
+// Rsquare($close, 10)
+def qlib158Alpha35(close) {
+    return Rsquare(close, 10)
+}
+
+// Rsquare($close, 20)
+def qlib158Alpha36(close) {
+    return Rsquare(close, 20)
+}
+
+// Rsquare($close, 30)
+def qlib158Alpha37(close) {
+    return Rsquare(close, 30)
+}
+
+// Rsquare($close, 60)
+def qlib158Alpha38(close) {
+    return Rsquare(close, 60)
+}
+
+// Resi($close, 5)/$close
+def qlib158Alpha39(close) {
+    return Resi(close, 5) \ close
+}
+
+// Resi($close, 10)/$close
+def qlib158Alpha40(close) {
+    return Resi(close, 10) \ close
+}
+
+// Resi($close, 20)/$close
+def qlib158Alpha41(close) {
+    return Resi(close, 20) \ close
+}
+
+// Resi($close, 30)/$close
+def qlib158Alpha42(close) {
+    return Resi(close, 30) \ close
+}
+
+// Resi($close, 60)/$close
+def qlib158Alpha43(close) {
+    return Resi(close, 60) \ close
+}
+
+// Max($high, 5)/$close
+def qlib158Alpha44(high, close) {
+    return mmax(high, 5) \ close
+}
+
+// Max($high, 10)/$close
+def qlib158Alpha45(high, close) {
+    return mmax(high, 10) \ close
+}
+
+// Max($high, 20)/$close
+def qlib158Alpha46(high, close) {
+    return mmax(high, 20) \ close
+}
+
+// Max($high, 30)/$close
+def qlib158Alpha47(high, close) {
+    return mmax(high, 30) \ close
+}
+
+// Max($high, 60)/$close
+def qlib158Alpha48(high, close) {
+    return mmax(high, 60) \ close
+}
+
+// Min($low, 5)/$close
+def qlib158Alpha49(low, close) {
+    return mmin(low, 5) \ close
+}
+
+// Min($low, 10)/$close
+def qlib158Alpha50(low, close) {
+    return mmin(low, 10) \ close
+}
+
+// Min($low, 20)/$close
+def qlib158Alpha51(low, close) {
+    return mmin(low, 20) \ close
+}
+
+// Min($low, 30)/$close
+def qlib158Alpha52(low, close) {
+    return mmin(low, 30) \ close
+}
+
+// Min($low, 60)/$close
+def qlib158Alpha53(low, close) {
+    return mmin(low, 60) \ close
+}
+
+// Quantile($close, 5, 0.8)/$close
+def qlib158Alpha54(close) {
+    return rolling_quantile(close, 5, 0.8) \ close
+}
+
+// Quantile($close, 10, 0.8)/$close
+def qlib158Alpha55(close) {
+    return rolling_quantile(close, 10, 0.8) \ close
+}
+
+// Quantile($close, 20, 0.8)/$close
+def qlib158Alpha56(close) {
+    return rolling_quantile(close, 20, 0.8) \ close
+}
+
+// Quantile($close, 30, 0.8)/$close
+def qlib158Alpha57(close) {
+    return rolling_quantile(close, 30, 0.8) \ close
+}
+
+
+// Quantile($close, 60, 0.8)/$close
+def qlib158Alpha58(close) {
+    return rolling_quantile(close, 60, 0.8) \ close
+}
+
+// Quantile($close, 5, 0.2)/$close
+def qlib158Alpha59(close) {
+    return rolling_quantile(close, 5, 0.2) \ close
+}
+
+// Quantile($close, 10, 0.2)/$close
+def qlib158Alpha60(close) {
+    return rolling_quantile(close, 10, 0.2) \ close
+}
+
+// Quantile($close, 20, 0.2)/$close
+def qlib158Alpha61(close) {
+    return rolling_quantile(close, 20, 0.2) \ close
+}
+
+// Quantile($close, 30, 0.2)/$close
+def qlib158Alpha62(close) {
+    return rolling_quantile(close, 30, 0.2) \ close
+}
+
+// Quantile($close, 60, 0.2)/$close
+def qlib158Alpha63(close) {
+    return rolling_quantile(close, 60, 0.2) \ close
+}
+
+// Rank($close, 5)
+def qlib158Alpha64(close) {
+    return rolling_rank(close, 5)
+}
+
+// Rank($close, 10)
+def qlib158Alpha65(close) {
+    return rolling_rank(close, 10)
+}
+
+// Rank($close, 20)
+def qlib158Alpha66(close) {
+    return rolling_rank(close, 20)
+}
+
+// Rank($close, 30)
+def qlib158Alpha67(close) {
+    return rolling_rank(close, 30)
+}
+
+// Rank($close, 60)
+def qlib158Alpha68(close) {
+    return rolling_rank(close, 60)
+}
+
+// ($close-Min($low, 5))/(Max($high, 5)-Min($low, 5)+1e-12)
+def qlib158Alpha69(high, low, close) {
+    return (close - mmin(low, 5)) \ (mmax(high, 5) - mmin(low, 5) + 1e-12)
+}
+
+// ($close-Min($low, 10))/(Max($high, 10)-Min($low, 10)+1e-12)
+def qlib158Alpha70(high, low, close) {
+    return (close - mmin(low, 10)) \ (mmax(high, 10) - mmin(low, 10) + 1e-12)
+}
+
+// ($close-Min($low, 20))/(Max($high, 20)-Min($low, 20)+1e-12)
+def qlib158Alpha71(high, low, close) {
+    return (close - mmin(low, 20)) \ (mmax(high, 20) - mmin(low, 20) + 1e-12)
+}
+
+// ($close-Min($low, 30))/(Max($high, 30)-Min($low, 30)+1e-12)
+def qlib158Alpha72(high, low, close) {
+    return (close - mmin(low, 30)) \ (mmax(high, 30) - mmin(low, 30) + 1e-12)
+}
+
+// ($close-Min($low, 60))/(Max($high, 60)-Min($low, 60)+1e-12)
+def qlib158Alpha73(high, low, close) {
+    return (close - mmin(low, 60)) \ (mmax(high, 60) - mmin(low, 60) + 1e-12)
+}
+
+// IdxMax($high, 5)/5
+def qlib158Alpha74(high) {
+    return mimax(high, 5) \ 5
+}
+
+// IdxMax($high, 10)/10
+def qlib158Alpha75(high) {
+    return mimax(high, 10) \ 10
+}
+
+// IdxMax($high, 20)/20
+def qlib158Alpha76(high) {
+    return mimax(high, 20) \ 20
+}
+
+// IdxMax($high, 30)/30
+def qlib158Alpha77(high) {
+    return mimax(high, 30) \ 30
+}
+
+// IdxMax($high, 60)/60
+def qlib158Alpha78(high) {
+    return mimax(high, 60) \ 60
+}
+
+// IdxMin($low, 5)/5
+def qlib158Alpha79(low) {
+    return mimin(low, 5) \ 5
+}
+
+// IdxMin($low, 10)/10
+def qlib158Alpha80(low) {
+    return mimin(low, 10) \ 10
+}
+
+// IdxMin($low, 20)/20
+def qlib158Alpha81(low) {
+    return mimin(low, 20) \ 20
+}
+
+// IdxMin($low, 30)/30
+def qlib158Alpha82(low) {
+    return mimin(low, 30) \ 30
+}
+
+// IdxMin($low, 60)/60
+def qlib158Alpha83(low) {
+    return mimin(low, 60) \ 60
+}
+
+// (IdxMax($high, 5)-IdxMin($low, 5))/5
+def qlib158Alpha84(high, low) {
+    return (mimax(high, 5) - mimin(low, 5)) \ 5
+}
+
+// (IdxMax($high, 10)-IdxMin($low, 10))/10
+def qlib158Alpha85(high, low) {
+    return (mimax(high, 10) - mimin(low, 10)) \ 10
+}
+
+// (IdxMax($high, 20)-IdxMin($low, 20))/20
+def qlib158Alpha86(high, low) {
+    return (mimax(high, 20) - mimin(low, 20)) \ 20
+}
+
+// (IdxMax($high, 30)-IdxMin($low, 30))/30
+def qlib158Alpha87(high, low) {
+    return (mimax(high, 30) - mimin(low, 30)) \ 30
+}
+
+// (IdxMax($high, 60)-IdxMin($low, 60))/60
+def qlib158Alpha88(high, low) {
+    return (mimax(high, 60) - mimin(low, 60)) \ 60
+}
+
+// Corr($close, Log($volume+1), 5)
+def qlib158Alpha89(close, volume) {
+    return mcorr(close, log(volume + 1), 5)
+}
+
+// Corr($close, Log($volume+1), 10)
+def qlib158Alpha90(close, volume) {
+    return mcorr(close, log(volume + 1), 10)
+}
+
+// Corr($close, Log($volume+1), 20)
+def qlib158Alpha91(close, volume) {
+    return mcorr(close, log(volume + 1), 20)
+}
+
+// Corr($close, Log($volume+1), 30)
+def qlib158Alpha92(close, volume) {
+    return mcorr(close, log(volume + 1), 30)
+}
+
+// Corr($close, Log($volume+1), 60)
+def qlib158Alpha93(close, volume) {
+    return mcorr(close, log(volume + 1), 60)
+}
+
+// Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 5)
+def qlib158Alpha94(close, volume) {
+    return mcorr(close \ move(close, 1), log(volume \ move(volume, 1) + 1), 5)
+}
+
+// Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 10)
+def qlib158Alpha95(close, volume) {
+    return mcorr(close \ move(close, 1), log(volume \ move(volume, 1) + 1), 10)
+}
+
+// Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 20)
+def qlib158Alpha96(close, volume) {
+    return mcorr(close \ move(close, 1), log(volume \ move(volume, 1) + 1), 20)
+}
+
+// Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 30)
+def qlib158Alpha97(close, volume) {
+    return mcorr(close \ move(close, 1), log(volume \ move(volume, 1) + 1), 30)
+}
+
+// Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 60)
+def qlib158Alpha98(close, volume) {
+    return mcorr(close \ move(close, 1), log(volume \ move(volume, 1) + 1), 60)
+}
+
+// Mean($close>Ref($close, 1), 5)
+def qlib158Alpha99(close) {
+    return mavg(close > move(close, 1), 5)
+}
+
+// Mean($close>Ref($close, 1), 10)
+def qlib158Alpha100(close) {
+    return mavg(close > move(close, 1), 10)
+}
+
+// Mean($close>Ref($close, 1), 20)
+def qlib158Alpha101(close) {
+    return mavg(close > move(close, 1), 20)
+}
+
+// Mean($close>Ref($close, 1), 30)
+def qlib158Alpha102(close) {
+    return mavg(close > move(close, 1), 30)
+}
+
+// Mean($close>Ref($close, 1), 60)
+def qlib158Alpha103(close) {
+    return mavg(close > move(close, 1), 60)
+}
+
+// Mean($close<Ref($close, 1), 5)
+def qlib158Alpha104(close) {
+    return mavg(close < move(close, 1), 5)
+}
+
+// Mean($close<Ref($close, 1), 10)
+def qlib158Alpha105(close) {
+    return mavg(close < move(close, 1), 10)
+}
+
+// Mean($close<Ref($close, 1), 20)
+def qlib158Alpha106(close) {
+    return mavg(close < move(close, 1), 20)
+}
+
+// Mean($close<Ref($close, 1), 30)
+def qlib158Alpha107(close) {
+    return mavg(close < move(close, 1), 30)
+}
+
+// Mean($close<Ref($close, 1), 60)
+def qlib158Alpha108(close) {
+    return mavg(close < move(close, 1), 60)
+}
+
+// Mean($close>Ref($close, 1), 5)-Mean($close<Ref($close, 1), 5)
+def qlib158Alpha109(close) {
+    return mavg(close > move(close, 1), 5) - mavg(close < move(close, 1), 5)
+}
+
+// Mean($close>Ref($close, 1), 10)-Mean($close<Ref($close, 1), 10)
+def qlib158Alpha110(close) {
+    return mavg(close > move(close, 1), 10) - mavg(close < move(close, 1), 10)
+}
+
+// Mean($close>Ref($close, 1), 20)-Mean($close<Ref($close, 1), 20)
+def qlib158Alpha111(close) {
+    return mavg(close > move(close, 1), 20) - mavg(close < move(close, 1), 20)
+}
+
+// Mean($close>Ref($close, 1), 30)-Mean($close<Ref($close, 1), 30)
+def qlib158Alpha112(close) {
+    return mavg(close > move(close, 1), 30) - mavg(close < move(close, 1), 30)
+}
+
+// Mean($close>Ref($close, 1), 60)-Mean($close<Ref($close, 1), 60)
+def qlib158Alpha113(close) {
+    return mavg(close > move(close, 1), 60) - mavg(close < move(close, 1), 60)
+}
+
+// Sum(Greater($close-Ref($close, 1), 0), 5)/(Sum(Abs($close-Ref($close, 1)), 5)+1e-12)
+def qlib158Alpha114(close) {
+    return msum(max(close - move(close, 1), 0), 5) \ (msum(abs(close - move(close, 1)), 5) + 1e-12)
+}
+
+// Sum(Greater($close-Ref($close, 1), 0), 10)/(Sum(Abs($close-Ref($close, 1)), 10)+1e-12)
+def qlib158Alpha115(close) {
+    return msum(max(close - move(close, 1), 0), 10) \ (msum(abs(close - move(close, 1)), 10) + 1e-12)
+}
+
+// Sum(Greater($close-Ref($close, 1), 0), 20)/(Sum(Abs($close-Ref($close, 1)), 20)+1e-12)
+def qlib158Alpha116(close) {
+    return msum(max(close - move(close, 1), 0), 20) \ (msum(abs(close - move(close, 1)), 20) + 1e-12)
+}
+
+// Sum(Greater($close-Ref($close, 1), 0), 30)/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)
+def qlib158Alpha117(close) {
+    return msum(max(close - move(close, 1), 0), 30) \ (msum(abs(close - move(close, 1)), 30) + 1e-12)
+}
+
+// Sum(Greater($close-Ref($close, 1), 0), 60)/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)
+def qlib158Alpha118(close) {
+    return msum(max(close - move(close, 1), 0), 60) \ (msum(abs(close - move(close, 1)), 60) + 1e-12)
+}
+
+// Sum(Greater(Ref($close, 1)-$close, 0), 5)/(Sum(Abs($close-Ref($close, 1)), 5)+1e-12)
+def qlib158Alpha119(close) {
+    return msum(max(move(close, 1) - close, 0), 5) \ (msum(abs(close - move(close, 1)), 5) + 1e-12)
+}
+
+// Sum(Greater(Ref($close, 1)-$close, 0), 10)/(Sum(Abs($close-Ref($close, 1)), 10)+1e-12)
+def qlib158Alpha120(close) {
+    return msum(max(move(close, 1) - close, 0), 10) \ (msum(abs(close - move(close, 1)), 10) + 1e-12)
+}
+
+// Sum(Greater(Ref($close, 1)-$close, 0), 20)/(Sum(Abs($close-Ref($close, 1)), 20)+1e-12)
+def qlib158Alpha121(close) {
+    return msum(max(move(close, 1) - close, 0), 20) \ (msum(abs(close - move(close, 1)), 20) + 1e-12)
+}
+
+// Sum(Greater(Ref($close, 1)-$close, 0), 30)/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)
+def qlib158Alpha122(close) {
+    return msum(max(move(close, 1) - close, 0), 30) \ (msum(abs(close - move(close, 1)), 30) + 1e-12)
+}
+
+// Sum(Greater(Ref($close, 1)-$close, 0), 60)/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)
+def qlib158Alpha123(close) {
+    return msum(max(move(close, 1) - close, 0), 60) \ (msum(abs(close - move(close, 1)), 60) + 1e-12)
+}
+
+// (Sum(Greater($close-Ref($close, 1), 0), 5)-Sum(Greater(Ref($close, 1)-$close, 0), 5))/(Sum(Abs($close-Ref($close, 1)), 5)+1e-12)
+def qlib158Alpha124(close) {
+    return (msum(max(close - move(close, 1), 0), 5) - msum(max(move(close, 1) - close, 0), 5)) \ (msum(abs(close - move(close, 1)), 5) + 1e-12)
+}
+
+// (Sum(Greater($close-Ref($close, 1), 0), 10)-Sum(Greater(Ref($close, 1)-$close, 0), 10))/(Sum(Abs($close-Ref($close, 1)), 10)+1e-12)
+def qlib158Alpha125(close) {
+    return (msum(max(close - move(close, 1), 0), 10) - msum(max(move(close, 1) - close, 0), 10)) \ (msum(abs(close - move(close, 1)), 10) + 1e-12)
+}
+
+// (Sum(Greater($close-Ref($close, 1), 0), 20)-Sum(Greater(Ref($close, 1)-$close, 0), 20))/(Sum(Abs($close-Ref($close, 1)), 20)+1e-12)
+def qlib158Alpha126(close) {
+    return (msum(max(close - move(close, 1), 0), 20) - msum(max(move(close, 1) - close, 0), 20)) \ (msum(abs(close - move(close, 1)), 20) + 1e-12)
+}
+
+// (Sum(Greater($close-Ref($close, 1), 0), 30)-Sum(Greater(Ref($close, 1)-$close, 0), 30))/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)
+def qlib158Alpha127(close) {
+    return (msum(max(close-move(close, 1), 0), 30)-msum(max(move(close, 1)-close, 0), 30)) \ (msum(abs(close-move(close, 1)), 30)+1e-12)
+}
+
+// (Sum(Greater($close-Ref($close, 1), 0), 60)-Sum(Greater(Ref($close, 1)-$close, 0), 60))/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)
+def qlib158Alpha128(close) {
+    return (msum(max(close - move(close, 1), 0), 60)-msum(max(move(close, 1)-close, 0), 60)) \ (msum(abs(close-move(close, 1)), 60)+1e-12)
+}
+
+// Mean($volume, 5)/($volume+1e-12)
+def qlib158Alpha129(volume) {
+    return mavg(volume, 5) \ (volume + 1e-12)
+}
+
+// Mean($volume, 10)/($volume+1e-12)
+def qlib158Alpha130(volume) {
+    return mavg(volume, 10) \ (volume + 1e-12)
+}
+
+// Mean($volume, 20)/($volume+1e-12)
+def qlib158Alpha131(volume) {
+    return mavg(volume, 20) \ (volume + 1e-12)
+}
+
+// Mean($volume, 30)/($volume+1e-12)
+def qlib158Alpha132(volume) {
+    return mavg(volume, 30) \ (volume + 1e-12)
+}
+
+// Mean($volume, 60)/($volume+1e-12)
+def qlib158Alpha133(volume) {
+    return mavg(volume, 60) \ (volume + 1e-12)
+}
+
+// Std($volume, 5)/($volume+1e-12)
+def qlib158Alpha134(volume) {
+    return mstd(volume, 5) \ (volume + 1e-12)
+}
+
+// Std($volume, 10)/($volume+1e-12)
+def qlib158Alpha135(volume) {
+    return mstd(volume, 10) \ (volume + 1e-12)
+}
+
+// Std($volume, 20)/($volume+1e-12)
+def qlib158Alpha136(volume) {
+    return mstd(volume, 20) \ (volume + 1e-12)
+}
+
+// Std($volume, 30)/($volume+1e-12)
+def qlib158Alpha137(volume) {
+    return mstd(volume, 30) \ (volume + 1e-12)
+}
+
+// Std($volume, 60)/($volume+1e-12)
+def qlib158Alpha138(volume) {
+    return mstd(volume, 60) \ (volume + 1e-12)
+}
+
+// Std(Abs($close/Ref($close, 1)-1)*$volume, 5)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 5)+1e-12)
+def qlib158Alpha139(close, volume) {
+    return mstd(abs(close \ move(close, 1) - 1) * volume, 5) \ (mavg(abs(close \ move(close, 1) - 1) * volume, 5) + 1e-12)
+}
+
+// Std(Abs($close/Ref($close, 1)-1)*$volume, 10)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 10)+1e-12)
+def qlib158Alpha140(close, volume) {
+    return mstd(abs(close \ move(close, 1) - 1) * volume, 10) \ (mavg(abs(close \ move(close, 1) - 1) * volume, 10) + 1e-12)
+}
+
+// Std(Abs($close/Ref($close, 1)-1)*$volume, 20)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 20)+1e-12)
+def qlib158Alpha141(close, volume) {
+    return mstd(abs(close \ move(close, 1) - 1) * volume, 20) \ (mavg(abs(close \ move(close, 1) - 1) * volume, 20) + 1e-12)
+}
+
+// Std(Abs($close/Ref($close, 1)-1)*$volume, 30)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 30)+1e-12)
+def qlib158Alpha142(close, volume) {
+    return mstd(abs(close \ move(close, 1) - 1) * volume, 30) \ (mavg(abs(close \ move(close, 1) - 1) * volume, 30) + 1e-12)
+}
+
+// Std(Abs($close/Ref($close, 1)-1)*$volume, 60)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 60)+1e-12)
+def qlib158Alpha143(close, volume) {
+    return mstd(abs(close \ move(close, 1) - 1) * volume, 60) \ (mavg(abs(close \ move(close, 1) - 1) * volume, 60) + 1e-12)
+}
+
+// Sum(Greater($volume-Ref($volume, 1), 0), 5)/(Sum(Abs($volume-Ref($volume, 1)), 5)+1e-12)
+def qlib158Alpha144(volume) {
+    return msum(max(volume - move(volume, 1), 0), 5) \ (msum(abs(volume - move(volume, 1)), 5) + 1e-12)
+}
+
+// Sum(Greater($volume-Ref($volume, 1), 0), 10)/(Sum(Abs($volume-Ref($volume, 1)), 10)+1e-12)
+def qlib158Alpha145(volume) {
+    return msum(max(volume - move(volume, 1), 0), 10) \ (msum(abs(volume - move(volume, 1)), 10) + 1e-12)
+}
+
+// Sum(Greater($volume-Ref($volume, 1), 0), 20)/(Sum(Abs($volume-Ref($volume, 1)), 20)+1e-12)
+def qlib158Alpha146(volume) {
+    return msum(max(volume - move(volume, 1), 0), 20) \ (msum(abs(volume - move(volume, 1)), 20) + 1e-12)
+}
+
+// Sum(Greater($volume-Ref($volume, 1), 0), 30)/(Sum(Abs($volume-Ref($volume, 1)), 30)+1e-12)
+def qlib158Alpha147(volume) {
+    return msum(max(volume - move(volume, 1), 0), 30) \ (msum(abs(volume - move(volume, 1)), 30) + 1e-12)
+}
+
+// Sum(Greater($volume-Ref($volume, 1), 0), 60)/(Sum(Abs($volume-Ref($volume, 1)), 60)+1e-12)
+def qlib158Alpha148(volume) {
+    return msum(max(volume - move(volume, 1), 0), 60) \ (msum(abs(volume - move(volume, 1)), 60) + 1e-12)
+}
+
+// Sum(Greater(Ref($volume, 1)-$volume, 0), 5)/(Sum(Abs($volume-Ref($volume, 1)), 5)+1e-12)
+def qlib158Alpha149(volume) {
+    return msum(max(move(volume, 1) - volume, 0), 5) \ (msum(abs(volume - move(volume, 1)), 5) + 1e-12)
+}
+
+// Sum(Greater(Ref($volume, 1)-$volume, 0), 10)/(Sum(Abs($volume-Ref($volume, 1)), 10)+1e-12)
+def qlib158Alpha150(volume) {
+    return msum(max(move(volume, 1) - volume, 0), 10) \ (msum(abs(volume - move(volume, 1)), 10) + 1e-12)
+}
+
+// Sum(Greater(Ref($volume, 1)-$volume, 0), 20)/(Sum(Abs($volume-Ref($volume, 1)), 20)+1e-12)
+def qlib158Alpha151(volume) {
+    return msum(max(move(volume, 1) - volume, 0), 20) \ (msum(abs(volume - move(volume, 1)), 20) + 1e-12)
+}
+
+// Sum(Greater(Ref($volume, 1)-$volume, 0), 30)/(Sum(Abs($volume-Ref($volume, 1)), 30)+1e-12)
+def qlib158Alpha152(volume) {
+    return msum(max(move(volume, 1) - volume, 0), 30) \ (msum(abs(volume - move(volume, 1)), 30) + 1e-12)
+}
+
+// Sum(Greater(Ref($volume, 1)-$volume, 0), 60)/(Sum(Abs($volume-Ref($volume, 1)), 60)+1e-12)
+def qlib158Alpha153(volume) {
+    return msum(max(move(volume, 1) - volume, 0), 60) \ (msum(abs(volume - move(volume, 1)), 60) + 1e-12)
+}
+
+// (Sum(Greater($volume-Ref($volume, 1), 0), 5)-Sum(Greater(Ref($volume, 1)-$volume, 0), 5))/(Sum(Abs($volume-Ref($volume, 1)), 5)+1e-12)
+def qlib158Alpha154(volume) {
+    return (msum(max(volume - move(volume, 1), 0), 5) - msum(max(move(volume, 1) - volume, 0), 5)) \ (msum(abs(volume - move(volume, 1)), 5) + 1e-12)
+}
+
+// (Sum(Greater($volume-Ref($volume, 1), 0), 10)-Sum(Greater(Ref($volume, 1)-$volume, 0), 10))/(Sum(Abs($volume-Ref($volume, 1)), 10)+1e-12)
+def qlib158Alpha155(volume) {
+    return (msum(max(volume - move(volume, 1), 0), 10) - msum(max(move(volume, 1) - volume, 0), 10)) \ (msum(abs(volume - move(volume, 1)), 10) + 1e-12)
+}
+
+// (Sum(Greater($volume-Ref($volume, 1), 0), 20)-Sum(Greater(Ref($volume, 1)-$volume, 0), 20))/(Sum(Abs($volume-Ref($volume, 1)), 20)+1e-12)
+def qlib158Alpha156(volume) {
+    return (msum(max(volume - move(volume, 1), 0), 20) - msum(max(move(volume, 1) - volume, 0), 20)) \ (msum(abs(volume - move(volume, 1)), 20) + 1e-12)
+}
+
+// (Sum(Greater($volume-Ref($volume, 1), 0), 30)-Sum(Greater(Ref($volume, 1)-$volume, 0), 30))/(Sum(Abs($volume-Ref($volume, 1)), 30)+1e-12)
+def qlib158Alpha157(volume) {
+    return (msum(max(volume - move(volume, 1), 0), 30) - msum(max(move(volume, 1) - volume, 0), 30)) \ (msum(abs(volume - move(volume, 1)), 30) + 1e-12)
+}
+
+// (Sum(Greater($volume-Ref($volume, 1), 0), 60)-Sum(Greater(Ref($volume, 1)-$volume, 0), 60))/(Sum(Abs($volume-Ref($volume, 1)), 60)+1e-12)
+def qlib158Alpha158(volume) {
+    return (msum(max(volume - move(volume, 1), 0), 60) - msum(max(move(volume, 1) - volume, 0), 60)) \ (msum(abs(volume - move(volume, 1)), 60) + 1e-12)
+}
+    
