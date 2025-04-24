@@ -335,6 +335,7 @@ def extract_fields(expressions: Union[str, Iterable[str]]) -> List[str]:
     
     return list(fields)
 
+
 def compare_dict_value(src_data: dict, dst_data: dict):
     """Compare dict value
 

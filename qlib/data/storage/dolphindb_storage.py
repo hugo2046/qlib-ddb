@@ -3,7 +3,7 @@ Author: hugo2046 shen.lan123@gmail.com
 Date: 2025-02-18 15:05:59
 LastEditors: hugo2046 shen.lan123@gmail.com
 LastEditTime: 2025-02-25 10:11:05
-FilePath: 
+FilePath:
 Description: 用于接入dolphindb
 """
 
@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from qlib.config import C
 from qlib.data.cache import H
-from qlib.data.data import DolphinDB
+from qlib.data.data import DBClient
 from qlib.data.storage import (
     CalendarStorage,
     CalVT,
@@ -32,16 +32,6 @@ TABLE_MAPPING: Dict = {"calendar": "QlibCalendar"}
 
 
 class DBStorageMixin:
-
-    def query(self, expr):
-        df = pd.DataFrame()
-
-        try:
-            df = DolphinDB.run(expr)
-        except Exception as e:
-            logger.error(e)
-
-        return df
 
     @property
     def database_uri(self):
@@ -62,13 +52,12 @@ class DBStorageMixin:
         return freq_l
 
     @property
-    def uri(self):
-        return self.table_name
+    def uri(self) -> Tuple[str, str]:
+        return self.db_path, self.table_name
 
-    def exists(self, table_name):
+    def exists(self, db_path: str, table_name: str) -> bool:
 
-        storage_name, table_name = table_name.split(".")
-        return DolphinDB.run(f"""existsTable("dfs://{storage_name}","{table_name}")""")
+        return DBClient.session.existsTable(db_path, table_name)
 
     def check(self):
         """check self.uri
@@ -77,7 +66,7 @@ class DBStorageMixin:
         -------
         ValueError
         """
-        if not self.exists(self.uri):
+        if not self.exists(*self.uri):
             raise ValueError(f"{self.storage_name} not exists: {self.uri}")
 
 
@@ -90,10 +79,9 @@ class DBCalendarStorage(DBStorageMixin, CalendarStorage):
         self.region = C["region"]
 
         # calendars.day
-        self.table_name = f"{self.storage_name}s.{self._freq_db}"
-        self.ddb_table = (
-            f"""loadTable("dfs://Qlib{self.storage_name.title()}s","{self._freq_db}")"""
-        )
+        self.db_path: str = f"dfs://Qlib{self.storage_name.title()}s"
+        self.table_name: str = str(self._freq_db)
+
 
     # 从这里获取数据
     def _read_calendar(self) -> List[CalVT]:
@@ -102,18 +90,16 @@ class DBCalendarStorage(DBStorageMixin, CalendarStorage):
         # we can add parameters like `skip_rows: int = 0, n_rows: int = None` to the interface.
         # Currently, it is not supported for the txt-based calendar
 
-        if not self.exists(self.table_name):
+        if not self.exists(self.db_path, self.table_name):
             self._write_calendar(values=[])
 
-        sql = f"""SELECT * FROM {self.ddb_table}"""
-        df = DolphinDB.run(sql)
+        df: pd.DataFrame = (
+            DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
+        )
         if df.empty:
             return []
 
         return df["TRADE_DAYS"].tolist()
-
-    def _write_calendar(self, values: Iterable[CalVT], mode: str = "wb"):
-        pass
 
     @property
     def _freq_db(self) -> str:
@@ -136,7 +122,7 @@ class DBCalendarStorage(DBStorageMixin, CalendarStorage):
 
     @property
     def data(self) -> List[CalVT]:
-        # self.check()
+        self.check()
         # If cache is enabled, then return cache directly
         if self.enable_read_cache:
             key = "orig_file" + str(self.uri)
@@ -154,46 +140,10 @@ class DBCalendarStorage(DBStorageMixin, CalendarStorage):
             )
         return _calendar
 
-    def _get_storage_freq(self) -> List[str]:
-        return sorted(
-            set(map(lambda x: x.stem.split("_")[0], self.uri.parent.glob("*.txt")))
-        )
-
-    def extend(self, values: Iterable[CalVT]) -> None:
-        self._write_calendar(values, mode="ab")
-
-    def clear(self) -> None:
-        self._write_calendar(values=[])
-
     def index(self, value: CalVT) -> int:
         self.check()
         calendar = self._read_calendar()
         return int(np.argwhere(calendar == value)[0])
-
-    def insert(self, index: int, value: CalVT):
-        calendar = self._read_calendar()
-        calendar = np.insert(calendar, index, value)
-        self._write_calendar(values=calendar)
-
-    def remove(self, value: CalVT) -> None:
-        self.check()
-        index = self.index(value)
-        calendar = self._read_calendar()
-        calendar = np.delete(calendar, index)
-        self._write_calendar(values=calendar)
-
-    def __setitem__(
-        self, i: Union[int, slice], values: Union[CalVT, Iterable[CalVT]]
-    ) -> None:
-        calendar = self._read_calendar()
-        calendar[i] = values
-        self._write_calendar(values=calendar)
-
-    def __delitem__(self, i: Union[int, slice]) -> None:
-        self.check()
-        calendar = self._read_calendar()
-        calendar = np.delete(calendar, i)
-        self._write_calendar(values=calendar)
 
     def __getitem__(self, i: Union[int, slice]) -> Union[CalVT, List[CalVT]]:
         self.check()
@@ -215,71 +165,40 @@ class DBInstrumentStorage(DBStorageMixin, InstrumentStorage):
         # 实际调用时D.instruments("pool")
         # 传入的table_name就是instruments.pool
         # self.storage_name = "instruments"此时
-        self.table_name = f"Qlib{self.storage_name.title()}s.{market.lower()}"
-        self.ddb_table = f"""loadTable("dfs://Qlib{self.storage_name.title()}s","{market.lower()}")"""
+        self.db_path: str = f"dfs://Qlib{self.storage_name.title()}s"
+        self.table_name: str = market.lower()
 
     def _read_instrument(self) -> Dict[InstKT, InstVT]:
-        if not self.exists(self.table_name):
-            raise FileNotFoundError(self.table_name)
+        
+        self.check()
 
         _instruments = dict()
 
-        sql = f"""SELECT * FROM {self.ddb_table}"""
-
-        df = DolphinDB.run(sql)
+        # sql = f"""SELECT * FROM {self.ddb_table}"""
+        # df = DolphinDB.run(sql)
+        df: pd.DataFrame = (
+            DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
+        )
         for row in df.itertuples(index=False):
             _instruments.setdefault(row[0], []).append((row[1], row[2]))
 
         return _instruments
 
-    def _write_instrument(self, data: Dict[InstKT, InstVT] = None) -> None:
-        raise NotImplementedError(f"Please use other database tools to write!")
-
-    def clear(self) -> None:
-        self._write_instrument(data={})
 
     @property
     def data(self) -> Dict[InstKT, InstVT]:
         self.check()
         return self._read_instrument()
 
-    def __setitem__(self, k: InstKT, v: InstVT) -> None:
-        inst = self._read_instrument()
-        inst[k] = v
-        self._write_instrument(inst)
-
-    def __delitem__(self, k: InstKT) -> None:
-        self.check()
-        inst = self._read_instrument()
-        del inst[k]
-        self._write_instrument(inst)
 
     def __getitem__(self, k: InstKT) -> InstVT:
         self.check()
         return self._read_instrument()[k]
 
-    def update(self, *args, **kwargs) -> None:
-        if len(args) > 1:
-            raise TypeError(f"update expected at most 1 arguments, got {len(args)}")
-        inst = self._read_instrument()
-        if args:
-            other = args[0]  # type: dict
-            if isinstance(other, Mapping):
-                for key in other:
-                    inst[key] = other[key]
-            elif hasattr(other, "keys"):
-                for key in other.keys():
-                    inst[key] = other[key]
-            else:
-                for key, value in other:
-                    inst[key] = value
-        for key, value in kwargs.items():
-            inst[key] = value
-
-        self._write_instrument(inst)
 
     def __len__(self) -> int:
         return len(self.data)
+
 
 class DBFeatureStorage(DBStorageMixin, FeatureStorage):
     """
@@ -302,166 +221,49 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
             if isinstance(instrument, str)
             else list(map(lambda x: x.upper(), instrument))
         )
-        self.db_path = f"dfs://Qlib{self.storage_name.title()}s{self.freq.title()}"
+        self.db_path = f"Qlib{self.storage_name.title()}s{self.freq.title()}"
         self.table_name = "Features"
-
-        self.calendar = self._read_calendar()
-
-        self.has_field = self._exists_table() and self.field_exists()
-        self.storage_start_index = self.start_index
-        self.storage_end_index = self.end_index
-
-    def _exists_table(self) -> bool:
-
-        return DolphinDB.existsTable(self.db_path, self.table_name)
-
-    def _read_calendar(self) -> List[CalVT]:
-        # NOTE:
-        # if we want to accelerate partial reading calendar
-        # we can add parameters like `skip_rows: int = 0, n_rows: int = None` to the interface.
-        # Currently, it is not supported for the txt-based calendar
-
-        if not DolphinDB.existsTable("dfs://QlibCalendars", self.freq):
-            raise NotImplementedError(
-                f"Table dfs://QlibCalendars/{self.freq} not exists."
-            )
-
-        sql: str = f"""SELECT * FROM loadTable("dfs://QlibCalendars","{self.freq}")"""
-        df: pd.DataFrame = DolphinDB.run(sql)
-
-        # check the type of the query result
-        if not isinstance(df, (pd.DataFrame, pd.Series)):
-            raise TypeError(f"查询结果类型不是DataFrame或Series.[sql expr:{sql}]")
-
-        if df.empty:
-            return []
-
-        return df["TRADE_DAYS"].tolist()
-
-    def field_exists(self):
-
-        ddb_fields = (
-            DolphinDB.loadTable(self.table_name, self.db_path).schema["name"].tolist()
-        )
-
-        if self.field not in ddb_fields:
-            raise KeyError(f"field {self.field} not exists")
-
-        df = (
-            DolphinDB.loadTable(self.table_name, self.db_path)
-            .select(f"count({self.field})")
-            .where(f"code=='{self.instrument}'")
-            .toDF()
-        )
-        if df.empty:
-            return False
-        return df.iloc[0, 0] != 0
 
     def clear(self):
         with self.uri.open("wb") as _:
             pass
 
     @property
-    def data(self) -> pd.Series:
+    def data(self) -> str:
         return self[:]
 
-    def write(self, data_array: Union[List, np.ndarray], index: int = None) -> None:
-        raise NotImplementedError(f"Please use other database tools to write!")
-
-    @property
-    def start_index(self) -> Union[int, None]:
-        if not self.has_field:
-            return None
-
-        df = (
-            DolphinDB.loadTable(self.table_name, self.db_path)
-            .select("date(min(date))")
-            .where(f"code=='{self.instrument}'")
-            .toDF()
-        )
-        if df.empty:
-            return None
-        else:
-            return self.calendar.index(df.iat[0, 0])
-
-    @property
-    def end_index(self) -> Union[int, None]:
-        if not self.has_field:
-            return None
-
-        return self.start_index + len(self) - 1
-
     def __getitem__(self, i: Union[int, slice]) -> Union[Tuple[int, float], pd.Series]:
+      
+        from ..backend.ddb_qlib import ddb_compute_features, get_query_date_range
 
-        if not self.has_field:
-            if isinstance(i, int):
-                return None, None
-            elif isinstance(i, slice):
-                return pd.Series(dtype=np.float32)
-            else:
-                raise TypeError(f"type(i) = {type(i)}")
+        if isinstance(i, pd.Timestamp):
 
-        if isinstance(i, int):
-
-            if self.storage_start_index > i:
-                raise IndexError(f"{i}: start index is {self.storage_start_index}")
-
-            watch_dt = self.calendar[i - self.storage_start_index + 1].strftime(
-                "%Y.%m.%d"
+            df: pd.DataFrame = ddb_compute_features(
+                DBClient.session,
+                self.instrument,
+                self.field,
+                i,
+                i,
+                self.db_path,
+                self.table_name,
             )
-
-            df = (
-                DolphinDB.loadTable(self.table_name, self.db_path)
-                .select(self.field)
-                .where(f"code=='{self.instrument}' and date=='{watch_dt}'")
-                .toDF()
-            )
-
-            if df.empty:
-                return i, None
-            else:
-                return i, df.iloc[0][self.field]
 
         elif isinstance(i, slice):
-            start_index = self.storage_start_index if i.start is None else i.start
-            end_index = self.storage_end_index if i.stop is None else i.stop - 1
-            si = max(start_index, self.storage_start_index)
-            if si > end_index:
-                return pd.Series(dtype=np.float32)
 
-            # start_id = si - self.storage_start_index + 1
-            # end_id = end_index - self.storage_start_index + 1
-            start_dt = self.calendar[si].strftime("%Y.%m.%d")
-            end_dt = self.calendar[end_index].strftime("%Y.%m.%d")
-
-            df = (
-                DolphinDB.loadTable(self.table_name, self.db_path)
-                .select(self.field)
-                .where(
-                    f"code=='{self.instrument}' and date between pair({start_dt},{end_dt})"
-                )
-                .toDF()
+            start_time = None if i.start is None else i.start
+            end_time = None if i.stop is None else i.stop
+            start_time, end_time = get_query_date_range(DBClient.session,start_time, end_time)
+            df: pd.DataFrame = ddb_compute_features(
+                DBClient.session,
+                self.instrument,
+                self.field,
+                start_time,
+                end_time,
+                self.db_path,
+                self.table_name,
             )
-            data = df[self.field].to_list()
-            # print(si, self.storage_start_index, self.storage_end_index,count)
-            series = pd.Series(data, index=pd.RangeIndex(si, si + len(data)))
-            # print(series)
-            return series
+
         else:
             raise TypeError(f"type(i) = {type(i)}")
 
-    def __len__(self) -> int:
-
-        df = (
-            DolphinDB.loadTable(self.table_name, self.db_path)
-            .select("count(*)")
-            .where(f"code=='{self.instrument}'")
-            .toDF()
-        )
-        if df.empty:
-            return None
-        else:
-            return df.iloc[0, 0] - 1
-
-
-
+        return df

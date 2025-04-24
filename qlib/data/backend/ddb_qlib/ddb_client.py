@@ -1,10 +1,11 @@
-'''
+"""
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2025-02-19 14:29:41
 LastEditors: hugo2046 shen.lan123@gmail.com
-LastEditTime: 2025-02-25 12:30:03
+LastEditTime: 2025-04-17 16:02:46
 Description: 用于连接ddb
-'''
+"""
+
 from urllib.parse import unquote, urlparse
 
 import dolphindb as ddb
@@ -28,6 +29,10 @@ class DDBConnectionSpec(BaseModel):
 
 
 class DDBClient:
+    
+    _pool_instance = None  # 类变量用于存储连接池实例
+
+    
     def __init__(self, config: DDBConnectionSpec):
         self._config = config
         self._session = self._create_session()
@@ -46,18 +51,58 @@ class DDBClient:
         """创建单会话"""
         user, pwd, host, port = self._parse_uri()
         session = ddb.session(
-            protocol=ddb.settings.PROTOCOL_DDB, 
+            protocol=ddb.settings.PROTOCOL_DDB,
             show_output=True,  # 使用DDB协议
-            enableASYNC=False
+            enableASYNC=False,
         )
         session.connect(host=host, port=port, userid=user, password=pwd, reconnect=True)
         return session
+
+    def _create_pool(self,threadNum:int=4) -> ddb.DBConnectionPool:
+        """创建连接池"""
+        user, pwd, host, port = self._parse_uri()
+        return ddb.DBConnectionPool(
+            host,
+            port,
+            threadNum,
+            user,
+            pwd,
+            protocol=ddb.settings.PROTOCOL_DDB,
+            show_output=True,
+        )
 
     @property
     def session(self) -> ddb.Session:
         """直接获取会话对象"""
         return self._session
 
+    @property
+    def pool(self) -> ddb.DBConnectionPool:
+        """直接获取连接池对象"""
+        if self._pool_instance is None:
+            self._pool_instance = self._create_pool()
+        return self._pool_instance
+    
+    
+    @classmethod
+    def close_pool(cls):
+        """关闭并清理连接池"""
+        if cls._pool_instance is not None:
+            with cls._pool_lock:
+                if cls._pool_instance is not None:
+                    try:
+                        cls._pool_instance.shutDown()
+                    except:
+                        pass
+                    cls._pool_instance = None
+    
+    # def __del__(self):
+    #     """析构函数，确保资源正确释放"""
+    #     try:
+    #         if hasattr(self, '_session') and self._session:
+    #             self._session.close()
+    #     except:
+    #         pass
 
 if __name__ == "__main__":
 

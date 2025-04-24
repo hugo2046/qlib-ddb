@@ -9,7 +9,6 @@ import abc
 import pandas as pd
 from ..log import get_module_logger
 
-
 class Expression(abc.ABC):
     """
     Expression base class
@@ -22,7 +21,7 @@ class Expression(abc.ABC):
 
         - period time is designed for Point-in-time database.  For example, the period time maybe 2014Q4, its value can observed for multiple times(different value may be observed at different time due to amendment).
     """
-
+    
     def __str__(self):
         return type(self).__name__
 
@@ -182,7 +181,7 @@ class Expression(abc.ABC):
             feature series: The index of the series is the calendar index
         """
         from .cache import H  # pylint: disable=C0415
-
+        
         cache_key = (str(self), instrument, start_index, end_index, *args)
         if cache_key in H["f"]:
             return H["f"][cache_key]
@@ -257,14 +256,7 @@ class Feature(Expression):
     def _load_internal(self, instrument, start_index, end_index, freq):
         # load
         from .data import FeatureD  # pylint: disable=C0415
-        from ..config import C  
-        from .cache import H
         
-        if C.get("database_uri", "").startswith("dolphindb://"):
-            ddb_key = (str(self), instrument, freq)
-            if ddb_key in H["f"]:
-                return H["f"][ddb_key].loc[start_index:end_index]
-
         return FeatureD.feature(instrument, str(self), start_index, end_index, freq)
 
     def get_longest_back_rolling(self):
