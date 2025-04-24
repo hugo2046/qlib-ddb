@@ -20,5 +20,6 @@ from .ddb_features import (
     register_ddb_functions_to_qlib,
     ddb_compute_features,
     fetch_features_from_ddb,
+    get_query_date_range,
     adapt_qlib_expr_syntax_for_ddb,
 )

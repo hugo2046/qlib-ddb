@@ -1519,9 +1519,9 @@ class BaseProvider:
                 inst_processors=inst_processors,
             )
             
-    def ddb_feature(self,instrument, field, start_time=None, end_time=None, freq="day"):
+    def ddb_feature(self,instruments, field, start_time=None, end_time=None, freq="day"):
         
-        return FeatureD.ddb_feature(instrument, field, start_time, end_time, freq)
+        return FeatureD.ddb_feature(instruments, field, start_time, end_time, freq)
 
 
 class LocalProvider(BaseProvider):
