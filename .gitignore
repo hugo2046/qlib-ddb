@@ -28,6 +28,8 @@ examples/rl/checkpoints/
 examples/rl/outputs/
 examples/rl_order_execution/data/
 examples/rl_order_execution/outputs/
+examples/test_ddb_src.dos
+examples/data/
 
 *.egg-info/
 
@@ -51,4 +53,3 @@ tags
 .idea/
 .aider*
 
-examples/test_ddb_src.dos
