@@ -223,47 +223,46 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
         )
         self.db_path = f"Qlib{self.storage_name.title()}s{self.freq.title()}"
         self.table_name = "Features"
-
-    def clear(self):
-        with self.uri.open("wb") as _:
-            pass
+        
 
     @property
     def data(self) -> str:
         return self[:]
 
-    def __getitem__(self, i: Union[int, slice]) -> Union[Tuple[int, float], pd.Series]:
+    def __getitem__(self, i: Union[int, slice]) -> Union[Tuple[int, float], pd.Series,pd.DataFrame]:
       
-        from ..backend.ddb_qlib import ddb_compute_features, get_query_date_range
+        from ..backend.ddb_qlib import fetch_features_from_ddb
 
-        if isinstance(i, pd.Timestamp):
+        if isinstance(i, (pd.Timestamp,int,str)):
+            # 如果单点返回为：(idx,field)
 
-            df: pd.DataFrame = ddb_compute_features(
-                DBClient.session,
-                self.instrument,
-                self.field,
-                i,
-                i,
-                self.db_path,
-                self.table_name,
-            )
+            # 单点查询
+            start_time = end_time = i
 
         elif isinstance(i, slice):
-
-            start_time = None if i.start is None else i.start
-            end_time = None if i.stop is None else i.stop
-            start_time, end_time = get_query_date_range(DBClient.session,start_time, end_time)
-            df: pd.DataFrame = ddb_compute_features(
-                DBClient.session,
-                self.instrument,
-                self.field,
-                start_time,
-                end_time,
-                self.db_path,
-                self.table_name,
+            # 返回为pd.Series,index-idx,values-field
+            
+            # 区间查询
+            start_time = i.start
+            end_time = i.stop
+            
+            # 只对整数类型的索引需要调整结束时间
+            if end_time is not None and isinstance(end_time, int):
+                end_time = end_time - 1
+            
+        else:
+            raise TypeError(f"不支持的索引类型: type(i) = {type(i)}")
+    
+        df: pd.DataFrame = fetch_features_from_ddb(
+            DBClient.session,
+            self.instrument,
+            self.field,
+            start_time,
+            end_time,
+            self.freq
             )
 
-        else:
-            raise TypeError(f"type(i) = {type(i)}")
-
+        if df.empty:
+            return pd.Series(dtype=float)
+        
         return df
