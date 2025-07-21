@@ -32,9 +32,6 @@ FIELDS_MAPPING: Dict = {
 }
 
 
-
-
-
 class TableSchema(BaseModel):
     db_name: str
     table_name: str
@@ -113,6 +110,8 @@ class QlibTableSchema:
 
     @classmethod
     def calendar(cls) -> TableSchema:
+        # FIXME:
+        # 当freq不为day时，qlib会报错
         # qlib的调用为calendar.xxxx 默认freq为day
         return TableSchema(
             db_name="QlibCalendars",
