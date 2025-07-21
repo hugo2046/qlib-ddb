@@ -190,7 +190,7 @@ class QlibDataLoader(DLWParser):
         super().__init__(config)
 
         if self.is_group:
-            # check sample config
+            # check sample config  
             if isinstance(freq, dict):
                 for _gp in config.keys():
                     if _gp not in freq:
