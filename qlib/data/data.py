@@ -13,30 +13,29 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
 # For supporting multiprocessing in outer code, joblib is used
 from joblib import delayed
 
 from ..config import C
 from ..log import get_module_logger
-from ..utils import (Wrapper, code_to_fname, get_module_by_module_path,
-                     get_period_list, hash_args, init_instance_by_config,
-                     normalize_cache_fields, parse_field, read_period_data,
-                     register_wrapper, time_to_slc_point)
+from ..utils import (
+    Wrapper,
+    code_to_fname,
+    get_module_by_module_path,
+    get_period_list,
+    hash_args,
+    init_instance_by_config,
+    normalize_cache_fields,
+    parse_field,
+    read_period_data,
+    register_wrapper,
+    time_to_slc_point,
+)
 from ..utils.paral import ParallelExt
 from .cache import DiskDatasetCache, H
 from .inst_processor import InstProcessor
 from .ops import Operators  # pylint: disable=W0611  # noqa: F401
-
-# from .backend.ddb_qlib import (
-#     DDBConnectionSpec,
-#     DDBClient,
-#     register_ddb_functions_to_qlib,
-#     ddb_compute_features,
-# )
-
-
-
-
 
 
 class ProviderBackendMixin:
@@ -66,18 +65,25 @@ class ProviderBackendMixin:
     def backend_obj(self, **kwargs):
 
         # 修改用于支持原有数据和数据库后端的切换
-        if C.get("database_uri", None) is not None:
+        if self.is_other_backend():
 
             # database_uri = C.get("database_uri", None)
             backend = self.get_database_backend()
+            
         else:
-
+            
             # provider_uri = C.get("provider_uri", None)
             backend = self.backend if self.backend else self.get_default_backend()
-
+            
         backend = copy.deepcopy(backend)
         backend.setdefault("kwargs", {}).update(**kwargs)
         return init_instance_by_config(backend)
+    
+    def is_other_backend(self):
+        # 判断是否是其他后端
+        if C.get("database_uri", None) is not None:
+            return True
+        return False
 
 
 class CalendarProvider(abc.ABC):
@@ -621,7 +627,7 @@ class DatasetProvider(abc.ABC):
 
         inst_l = []
         task_l = []
-       
+
         for inst, spans in it:
             inst_l.append(inst)
             task_l.append(
@@ -702,6 +708,7 @@ class DatasetProvider(abc.ABC):
             data.index = _calendar[data.index.values.astype(int)]
         data.index.names = ["datetime"]
 
+        # 这里的spans是instrument的时间范围,用于服务指数成份股的调出调出
         if not data.empty and spans is not None:
             mask = np.zeros(len(data), dtype=bool)
             for begin, end in spans:
@@ -714,6 +721,78 @@ class DatasetProvider(abc.ABC):
                     _processor, accept_types=InstProcessor
                 )
                 data = _processor_obj(data, instrument=inst)
+
+        return data
+
+    @staticmethod
+    def ddb_dataset_processor(
+        inst: Union[List[str], Dict],
+        column_names: Union[List[str], str],
+        start_time: pd.Timestamp,
+        end_time: pd.Timestamp,
+        freq: str,
+        inst_processors=[],
+    ):
+        from .backend.ddb_qlib import normalize_fields_to_ddb
+        # FIXME:inst_processors改为并行计算
+        # level0-instrument, level1-datetime
+        
+        def split_list_by_length(lst, n):
+            return [lst[i:i+n] for i in range(0, len(lst), n)]
+
+        column_names:List = [column_names] if isinstance(column_names,str) else column_names
+        split_column_names:List[List[str]] = split_list_by_length(column_names, 30)
+        dfs:List[pd.DataFrame] = [ExpressionD.expression(inst, fields, start_time, end_time, freq) for fields in split_column_names]
+        dfs_filter_empty:List[pd.DataFrame] = [df for df in dfs if isinstance(df, (pd.Series, pd.DataFrame)) and not df.empty]
+        data: pd.DataFrame = pd.concat(dfs_filter_empty,axis=1)
+
+        # 使用并行处理每个股票代码的数据
+        if inst_processors and (not data.empty):
+            grouper = data.groupby(level="instrument")
+            # 获取处理器配置的最大内核数
+            workers = max(min(C.get_kernels(freq), len(grouper)), 1)
+
+            def _process_group(group_data, inst, inst_processors):
+                for _processor in inst_processors:
+                    if _processor:
+                        _processor_obj = init_instance_by_config(
+                            _processor, accept_types=InstProcessor
+                        )
+                        group_data = _processor_obj(group_data, instrument=inst)
+                return group_data
+
+            # 创建任务列表
+            tasks = []
+            groups = []
+            for code, group in grouper:
+                groups.append(code)
+                tasks.append(delayed(_process_group)(group, code, inst_processors))
+
+            # 并行执行任务
+            results = ParallelExt(
+                n_jobs=workers,
+                backend=C.joblib_backend,
+                maxtasksperchild=C.maxtasksperchild,
+            )(tasks)
+
+            # 合并结果
+            if results:
+                data = pd.concat(results, axis=0)
+            return pd.DataFrame()
+        
+        if not data.empty:
+            column_names,_,_ = normalize_fields_to_ddb(column_names)
+            column_names:List[str] = list(column_names.keys())
+            # NOTE:data可能由于部分表达没有对应的基础字段造成缺失,这里使用reindex重新补充防止报错。
+            data = DiskDatasetCache.cache_to_origin_data(data.reindex(columns=column_names), column_names)
+        else:
+            data = pd.DataFrame(
+                index=pd.MultiIndex.from_arrays(
+                    [[], []], names=("instrument", "datetime")
+                ),
+                columns=column_names,
+                dtype=np.float32,
+            )
 
         return data
 
@@ -832,37 +911,22 @@ class LocalFeatureProvider(FeatureProvider, ProviderBackendMixin):
         self.remote = remote
         self.backend = backend
 
-    def feature(self, instrument, field, start_index: int, end_index: int, freq)->pd.DataFrame:
+    def feature(
+        self, instrument: str, field: str, start_index: int, end_index: int, freq: str
+    ) -> pd.DataFrame:
         
         instrument = code_to_fname(instrument)
-        
-        if is_using_dolphindb():
-            return self.backend_obj(
-                instrument=instrument, field=field, freq=freq
-            )[start_index : end_index]
+        if not self.is_other_backend():
+            # validate
+            field = str(field)[1:]
             
-        # validate
-        field = str(field)[1:]
         # self.backend_obj继承自ProviderBackendMixin
+        if isinstance(end_index,int):
+            end_index = end_index + 1
         return self.backend_obj(instrument=instrument, field=field, freq=freq)[
-            start_index : end_index + 1
+            start_index : end_index
         ]
-        
-    def ddb_feature(self, instruments, expr, start_time=None, end_time=None, freq="day"):
-        from .backend.ddb_qlib.ddb_features import fetch_features_from_ddb
-        
-        if not is_using_dolphindb():
-            raise ValueError("未找到 DolphinDB 连接配置，请检查 database_uri")
-        
-        return fetch_features_from_ddb(
-                DBClient.session,
-                instruments, 
-                expr, 
-                start_time, 
-                end_time, 
-                freq
-            )
-                
+
 
 class LocalPITProvider(PITProvider):
     # TODO: Add PIT backend file storage
@@ -978,19 +1042,29 @@ class LocalExpressionProvider(ExpressionProvider):
         super().__init__()
         self.time2idx = time2idx
         # 在初始化时确定使用哪个方法
-        self._expression_impl = self.ddb_expression if is_using_dolphindb() else self.file_expression
-    
-    def expression(self,instrument,field,start_time=None,end_time=None,freq="day"):
+        self._expression_impl = (
+            self.ddb_expression if is_using_dolphindb() else self.file_expression
+        )
+
+    def expression(self, instrument, field, start_time=None, end_time=None, freq="day"):
         """统一入口，调用已经确定的实现方法"""
         return self._expression_impl(instrument, field, start_time, end_time, freq)
-        
-    def ddb_expression(self,instrument,field,start_time=None,end_time=None,freq="day"):
-        
+
+    def ddb_expression(
+        self, instrument, field, start_time=None, end_time=None, freq="day"
+    ):
+
         # 使用ddb表达但也兼容qlib原有表达式,相比qlib表达,缺失对于前序计算期的支持
         # 比如计算MA10时wind为10所以应该在原有起始日期前10天开始计算.但ddb没有考虑这种情况.
-        series = pd.Series(np.float32)
+
+        series:pd.Series = pd.Series(np.float32)
         try:
-            df:pd.DataFrame = LocalFeatureProvider().feature(instrument,field,start_time,end_time,freq)
+            # 这样便不会从dolphindb_storage中获取数据除非使用的feature调用
+            # level0-instrument, level1-datetime
+            df: pd.DataFrame = FeatureD.feature(
+                instrument, field, start_time, end_time, freq
+            )
+
         except Exception as e:
             get_module_logger("data").debug(
                 f"Loading expression error: "
@@ -998,26 +1072,19 @@ class LocalExpressionProvider(ExpressionProvider):
                 f"error info: {str(e)}"
             )
             raise
-        # Ensure that each column type is consistent
-        # FIXME:
-        # 1) The stock data is currently float. If there is other types of data, this part needs to be re-implemented.
-        # 2) The precision should be configurable
-        
-        if not df.empty:
-            # NOTE:这里是下标索引的所以起始位置需要注意不是日期格式
-            df:pd.Series = df.set_index(["date",'code']).sort_index().loc[start_time:end_time]
-            df:pd.Series = df.swaplevel()
-            df.index.names = ["instrument","datetime"]
+
         try:
             series = df.astype(np.float32)
         except ValueError:
             pass
         except TypeError:
             pass
-    
+
         return series
 
-    def file_expression(self, instrument, field, start_time=None, end_time=None, freq="day"):
+    def file_expression(
+        self, instrument, field, start_time=None, end_time=None, freq="day"
+    )->pd.Series:
         expression = self.get_expression_instance(field)
         start_time = time_to_slc_point(start_time)
         end_time = time_to_slc_point(end_time)
@@ -1029,6 +1096,8 @@ class LocalExpressionProvider(ExpressionProvider):
             _, _, start_index, end_index = Cal.locate_index(
                 start_time, end_time, freq=freq, future=False
             )
+            # 这里是解析ops表达式的窗口大小
+            # 这里的窗口大小是相对的,所以需要加上当前的时间范围
             lft_etd, rght_etd = expression.get_extended_window_size()
             query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
         else:
@@ -1055,7 +1124,7 @@ class LocalExpressionProvider(ExpressionProvider):
         except TypeError:
             pass
         if not series.empty:
-            # NOTE:这里是下标索引的所以起始位置需要注意不是日期格式
+            # NOTE:这里是下标索引,不是日期
             series = series.loc[start_index:end_index]
         return series
 
@@ -1079,12 +1148,6 @@ class LocalDatasetProvider(DatasetProvider):
         """
         super().__init__()
         self.align_time = align_time
-        
-    def _get_dataset_from_dolphindb(self, instruments_d, column_names, start_time, end_time, freq):
-        """从 DolphinDB 获取数据集的专用方法"""
-        # 标准化表达式，解析原生qlib的ops
-        normalize_column_names = normalize_cache_fields(column_names)
-        return ExpressionD.expression(instruments_d, normalize_column_names, start_time, end_time, freq).sort_index()
 
     def dataset(
         self,
@@ -1114,10 +1177,14 @@ class LocalDatasetProvider(DatasetProvider):
 
         # 如果是调用本地数据库
         if is_using_dolphindb():
-            
-            # TODO:暂时未兼容inst_processors
-            return self._get_dataset_from_dolphindb(
-                instruments_d, column_names, start_time, end_time, freq
+
+            return self.ddb_dataset_processor(
+                instruments_d,
+                column_names,
+                start_time,
+                end_time,
+                freq,
+                inst_processors=inst_processors,
             )
 
         else:
@@ -1129,7 +1196,6 @@ class LocalDatasetProvider(DatasetProvider):
                 freq,
                 inst_processors=inst_processors,
             )
-
 
     @staticmethod
     def multi_cache_walker(
@@ -1170,7 +1236,6 @@ class LocalDatasetProvider(DatasetProvider):
         for field in column_names:
             ExpressionD.expression(inst, field, start_time, end_time, freq)
 
-
     # def _calc_features_us_ddb(
     #     self,
     #     instruments_d: Union[Dict[str, str], List[str]],
@@ -1179,10 +1244,9 @@ class LocalDatasetProvider(DatasetProvider):
     #     end_time,
     #     freq,
     # ):
-        
+
     #     from .backend.ddb_qlib import ddb_compute_features
-    
-         
+
     #     def _get_max_extended_window_size(expressions: List[str]) -> Tuple[int, int]:
     #         """
     #         获取表达式列表中扩展窗口大小的最大值。
@@ -1215,7 +1279,7 @@ class LocalDatasetProvider(DatasetProvider):
     #     query_start, query_end = calender[query_start], calender[query_end]
 
     #     # HACK:获取db_path和table_name的方式后续引用ddb_qlib/schemas.py中的方法
-    #     # 这样方式后续不够灵活,mr_by_code的参数等也不够灵活    
+    #     # 这样方式后续不够灵活,mr_by_code的参数等也不够灵活
     #     feature:pd.DataFrame = ddb_compute_features(
     #         DBClient.session,
     #         instruments_d,
@@ -1243,7 +1307,6 @@ class LocalDatasetProvider(DatasetProvider):
     #     feature.index.names=("instrument", "datetime")
 
     #     return feature
-
 
 
 class ClientCalendarProvider(CalendarProvider):
@@ -1518,9 +1581,16 @@ class BaseProvider:
                 freq,
                 inst_processors=inst_processors,
             )
-            
-    def ddb_feature(self,instruments, field, start_time=None, end_time=None, freq="day"):
-        
+
+    def ddb_feature(
+        self,
+        instruments: Union[Dict, List[str]],
+        field: Union[List[str], str],
+        start_time=None,
+        end_time=None,
+        freq="day",
+    ):
+
         return FeatureD.ddb_feature(instruments, field, start_time, end_time, freq)
 
 
@@ -1599,17 +1669,26 @@ class ClientProvider(BaseProvider):
 
 def is_using_dolphindb():
     """判断当前是否使用 DolphinDB 作为数据源"""
-    return C.get("database_uri", "").startswith("dolphindb://")
+    uri = C.get("database_uri", "")
+    if uri is None:
+        return False
+    return uri.startswith("dolphindb://")
 
-class DolphinDBClientProvider():
+
+class DolphinDBClientProvider:
     """
     DolphinDB数据提供者，支持单个和批量特征加载。
     当在qlib.init中提供database_uri时，将使用数据库查询进行数据检索。
     否则，将回退到默认的并行数据提取方法。
     """
-    def __init__(self, uri="dolphindb://admin:123456@127.0.0.1:8848")->None:
-        from .backend.ddb_qlib import (DDBClient, DDBConnectionSpec,
-                                       register_ddb_functions_to_qlib)
+
+    def __init__(self, uri="dolphindb://admin:123456@127.0.0.1:8848") -> None:
+        from .backend.ddb_qlib import (
+            DDBClient,
+            DDBConnectionSpec,
+            register_ddb_functions_to_qlib,
+        )
+
         self.uri = uri or C.get("database_uri")
         # 初始化连接
         config = DDBConnectionSpec(uri=self.uri)
