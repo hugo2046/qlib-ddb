@@ -1,0 +1,149 @@
+/**
+ * @brief 用于预处理Instruments相关数据
+ * @author Hugo
+ * @file prepareInstruments.dos
+ * @description 预处理Instruments的相关数据，为后续数据分析和模型准备数据基础
+ */
+
+
+
+/**
+ * 将股票代码及其对应的日期范围添加到字典中
+ * 
+ * @param row - 包含股票代码和日期范围的数据行，需要包含'code'、'begin_dt'和'end_dt'字段
+ * @param tmpDict - 可变字典，用于存储股票代码到日期范围列表的映射
+ * 
+ * 函数功能:
+ * - 如果字典中已存在该股票代码，则将新的日期范围(begin_dt,end_dt)添加到该代码对应的列表中
+ * - 如果字典中不存在该股票代码，则创建一个新条目，初始值为包含一个日期范围的列表
+ */
+ def addCodeDateSpanToDict(row,mutable tmpDict){
+
+    code = row['code'];
+    begin_dt = row['begin_dt'];
+    end_dt = row['end_dt'];
+
+    if (code in tmpDict){
+        tmpDict[code] = tmpDict[code].append!((begin_dt,end_dt));
+        
+    }
+    else{
+       
+        tmpDict[code] = [(begin_dt,end_dt)]
+        
+    };
+
+};
+
+/**
+ * 创建股票与日期范围的映射关系
+ * * @description
+ * 该函数接收一个包含股票代码和日期信息的输入表，
+ * 为每支股票创建其可用日期范围的映射。
+ * 
+ * @param inputTb - 输入表，应包含股票代码和日期信息
+ * @return 返回一个字典，键为股票代码(字符串类型)，值为该股票的日期范围信息 {code: [(begin_dt, end_dt), ...]}
+ */
+def createStockDateRangeMapping(inputTb){
+    
+    if (size(inputTb) == 0){
+        throw "输入表为空!";
+    };
+
+    // 检查必要列是否存在
+    requiredCols = `code`begin_dt`end_dt;
+    tableCols = inputTb.columnNames();
+    for (col in requiredCols){
+        if (!(col in tableCols)){
+            throw "输入表中缺少必要的列: " + col;
+        };
+    };
+
+    // 保留顺序
+    tmpDict = dict(STRING,ANY,true);
+    
+    try{each(addCodeDateSpanToDict{,tmpDict},inputTb)} catch(ex) {print("处理数据行时发生错误: " + ex);};
+    
+    return tmpDict
+    
+};
+
+
+// /**
+//  * 为给定日期范围内的每个交易日创建对应的可交易股票列表映射
+//  * 
+//  * @param startDate DATE - 开始日期
+//  * @param endDate DATE - 结束日期
+//  * @param stockSpans DICT<STRING,ARRAY<ARRAY<DATE>>> - 股票代码到其交易日期区间的映射，每个股票可以有多个交易区间
+//  *                    格式与createStockDateRangeMapping函数返回结果相同
+//  * @return DICT<DATE,ARRAY<STRING>> - 以交易日为键，可交易股票代码列表为值的字典
+//  * 
+//  * @example
+//  * // 获取2020-01-01到2020-12-31期间每个交易日可交易的股票列表
+//  * stockSpans = createStockDateRangeMapping(...);
+//  * dateStockMapping = createDateStockMapping(2020.01.01, 2020.12.31, stockSpans);
+//  */
+// def createDateStockMapping(startDate, endDate, stockSpans) {
+//     // 获取指定区间的交易日
+//     trading_days = getMarketCalendar("XSHG", startDate, endDate);
+    
+//     // 创建结果字典
+//     result = dict(DATE,ANY,true);
+    
+//     // 遍历每个交易日
+//     for (tday in trading_days) {
+
+//         stocks = [];
+        
+//         // 检查每个股票是否在这个交易日交易
+//         for (stockCode in keys(stockSpans)) {
+//             spans = stockSpans[stockCode];
+//             is_trading = false;
+            
+//             // 检查股票的每个交易区间
+//             for (span in spans) {
+
+//                 if (between(tday, pair(date(span[0]),date(span[1])))) {
+//                     is_trading = true;
+//                     break;
+//                 };
+//             };
+//             // 如果股票在交易，添加到结果中
+//             if (is_trading) {
+//                 append!(stocks, stockCode);
+//             };
+//         };
+        
+//         // 只添加有股票的日期
+//         if (size(stocks) > 0) {
+//             result[tday] = stocks;
+//         };
+//     };
+    
+//     return result;
+// };
+
+
+/**
+ * @brief 测试函数
+ * @description 测试创建股票日期范围映射和日期股票映射的功能
+ * @return 无
+ */
+// def test_func(){
+
+//     // 使用qlib的instruments数据作为测试
+//     instrumentsTB = loadText("/data1/hugo/workspace/qlib-ddb/examples/data/instruments/csi300.txt",delimiter="\t",containHeader=false);
+//     instrumentsTB.rename!(`col0`col1`col2,`code`begin_dt`end_dt);
+
+//     stockSpans = createStockDateRangeMapping(instrumentsTB);
+//     print("股票代码到日期范围的映射: ");
+//     print(stockSpans);
+//     // 获取2020-01-01到2020-12-31期间每个交易日可交易的股票列表
+//     dateStockMapping = createDateStockMapping(2020.01.01, 2022.12.31, stockSpans);
+//     print("日期到可交易股票列表的映射: " );
+//     print(dateStockMapping);
+
+// }
+
+
+// test_func()
