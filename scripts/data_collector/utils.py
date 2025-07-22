@@ -179,7 +179,7 @@ def get_calendar_list_by_ratio(
     return calendar
 
 
-def get_hs_stock_symbols() -> list:
+def get_hs_stock_symbols(threshold:int=3900) -> list:
     """get SH/SZ stock symbols
 
     Returns
@@ -215,7 +215,7 @@ def get_hs_stock_symbols() -> list:
             logger.warning("An error occurred while extracting data from the response.")
             raise
 
-        if len(_symbols) < 3900:
+        if len(_symbols) < threshold:
             raise ValueError("The complete list of stocks is not available.")
 
         # Add suffix after the stock code to conform to yahooquery standard, otherwise the data will not be fetched.
@@ -231,7 +231,7 @@ def get_hs_stock_symbols() -> list:
         symbols = set()
         _retry = 60
         # It may take multiple times to get the complete
-        while len(symbols) < MINIMUM_SYMBOLS_NUM:
+        while len(symbols) < threshold: # MINIMUM_SYMBOLS_NUM:
             symbols |= _get_symbol()
             time.sleep(3)
 
