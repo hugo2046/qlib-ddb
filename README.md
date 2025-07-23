@@ -1,8 +1,8 @@
 <!--
  * @Author: hugo2046 shen.lan123@gmail.com
  * @Date: 2025-02-18 11:26:04
- * @LastEditors: hugo2046 shen.lan123@gmail.com
- * @LastEditTime: 2025-04-24 15:12:20
+ * @LastEditors: shen.lan123@gmail.com
+ * @LastEditTime: 2025-07-23 21:36:53
  * @FilePath: /workspace/qlib-ddb/README.md
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 -->
@@ -169,3 +169,6 @@ D.ddb_feature(
     freq="day",
 )
 ```
+## 更多qlib模型可以加入星球
+![image](https://github.com/hugo2046/qlib-ddb/raw/2230f4533b83268acdd29e4e2e472115a5083aa9/imgs/%E7%9F%A5%E8%AF%86%E6%98%9F%E7%90%83.jpg)
+
