@@ -13,7 +13,7 @@ date,open,high,low,close,amount,volume,vwap,factor
 """
 
 from pydantic import BaseModel, field_validator
-from typing import List, Tuple, Optional,Dict
+from typing import List, Tuple, Optional,Dict,Union
 import dolphindb as ddb
 import pandas as pd
 import numpy as np
@@ -37,9 +37,9 @@ class TableSchema(BaseModel):
     table_name: str
     columns: List[Tuple[str, str]]  # (列名, 类型)
     partition_type: int  # ddb.settings.* ,为int类型
-    partition_columns: str
+    partition_columns: Optional[Union[str, List[str]]] = None,
     engine: str = "OLAP"
-    primary_key: Optional[str] = None
+    primary_key: Optional[Union[str, List[str]]] = None
     partitions: Optional[List] = None
 
     @field_validator("partition_type")
@@ -91,11 +91,11 @@ class QlibTableSchema:
         )
 
     @classmethod
-    def instrument(cls) -> TableSchema:
+    def instrument(cls,table_name:str="ashares") -> TableSchema:
         # qlib的调用为instrument.xxxx
         return TableSchema(
             db_name="QlibInstruments",
-            table_name="ashares",
+            table_name=table_name,
             columns=[
                 ("S_INFO_WINDCODE", "SYMBOL"),
                 ("S_INFO_LISTDATE", "DATE"),
@@ -104,7 +104,7 @@ class QlibTableSchema:
             partition_type=ddb.settings.HASH,
             partition_columns="S_INFO_WINDCODE",
             engine="PKEY",
-            primary_key="S_INFO_WINDCODE",
+            primary_key=["S_INFO_WINDCODE","S_INFO_LISTDATE","S_INFO_DELISTDATE"],
             partitions=[ddb.settings.DT_SYMBOL, 20],
         )
 

@@ -13,6 +13,7 @@ from .ddb_operator import (
     create_feature_daily_table,
     create_instrument_table,
     clean_qlib_db,
+    write_df_to_ddb
 )
 from .ddb_mysql_bridge import DDBMySQLBridge, init_qlib_ddb_from_mysql
 from .schemas import QlibTableSchema

@@ -232,7 +232,11 @@ def fetch_features_from_ddb(
         """
         # data: pd.DataFrame = session.run(ddb_expr)
         data:Dict[str,List] = session.run(ddb_expr)
-        data:Dict[str,pd.DataFrame] = {k:pd.DataFrame(data=v[0],index=v[1],columns=v[2]) for k, v in data.items()}
+        try:
+            data:Dict[str,pd.DataFrame] = {k:pd.DataFrame(data=v[0],index=v[1],columns=v[2]) for k, v in data.items()}
+        except IndexError as e:
+            # 可能是data为空
+            raise IndexError(f"传入的data数据为空: {e}")
         data:pd.DataFrame = pd.concat(data)
         
     if not isinstance(data, pd.DataFrame):
@@ -242,7 +246,7 @@ def fetch_features_from_ddb(
     if not data.empty:
         try:
             if isinstance(data.index, pd.MultiIndex):
-                data:pd.DataFrame = data.unstack(level=0).stack(level=0).swaplevel(0, 1)
+                data:pd.DataFrame = data.unstack(level=0).stack(level=0, future_stack=True).swaplevel(0, 1)
             else:
                 data: pd.DataFrame = data.set_index(["code", "date"])
         except KeyError:

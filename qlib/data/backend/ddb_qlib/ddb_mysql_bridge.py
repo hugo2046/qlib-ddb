@@ -7,14 +7,14 @@ Description: ddb连接mysql
 """
 
 from typing import Dict, Optional
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, validate_arguments
 
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .ddb_operator import DDBTableOperator
-from .schemas import QlibTableSchema,FIELDS_MAPPING
+from .schemas import QlibTableSchema, FIELDS_MAPPING
 from .utils import convert_wind_date_to_datetime
 
 class MySQLConnectionSpec(BaseModel):
@@ -59,7 +59,12 @@ class MySQLConnectionSpec(BaseModel):
 
 class DDBMySQLBridge:
     def __init__(self, ddb_uri: str, mysql_uri: str) -> None:
-
+        """
+        初始化DDBMySQLBridge实例
+        
+        :param ddb_uri: DolphinDB连接URI
+        :param mysql_uri: MySQL连接URI
+        """
         config = DDBConnectionSpec(uri=ddb_uri)
         connector = DDBClient(config)
 
@@ -68,7 +73,7 @@ class DDBMySQLBridge:
 
         self.spec = MySQLConnectionSpec(uri=mysql_uri)
 
-         # 构建连接表达式
+        # 构建连接表达式
         uri = self.spec.uri
         params = [
             f"'{uri['host']}'", 
@@ -89,6 +94,16 @@ class DDBMySQLBridge:
         mysql_conn={self.connector_expr};
         """
         )
+
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器出口，确保连接被正确关闭"""
+        self.close()
+        # 不抑制任何异常
+        return False
 
     def load_mysql_plugin(self) -> None:
         """在dolphinDB中加载MySQL插件"""
@@ -112,7 +127,11 @@ class DDBMySQLBridge:
         """
         关闭当前连接
         """
-        self.ddb_session.run("mysql::close(mysql_conn)")
+        try:
+            self.ddb_session.run("mysql::close(mysql_conn)")
+        except Exception as e:
+            # 即使关闭连接失败，也不应该中断程序执行
+            print(f"警告: 关闭MySQL连接时出现错误: {str(e)}")
 
     @validate_arguments
     def load_table(
@@ -152,34 +171,50 @@ class DDBMySQLBridge:
         params = [
             "mysql_conn",  # conn
             f"""'{table_or_query}'""",  # tableOrQuery
-            self._process_schema(table_schema) if table_schema else "",  # schema
-            str(start_row) if start_row is not None else "",  # startRow
-            str(row_num) if row_num is not None else "",  # rowNum
+            self._process_schema(table_schema) if table_schema else "NULL",  # schema
+            str(start_row) if start_row is not None else "NULL",  # startRow
+            str(row_num) if row_num is not None else "NULL",  # rowNum
             "true" if allow_empty_table else "false",  # allowEmptyTable
         ]
 
-        # 生成参数字符串
-        param_str = ", ".join(params)
+        # 生成参数字符串，过滤掉空参数
+        param_str = ", ".join([p for p in params if p])
         expr = f"""mysql::load({param_str})"""
         try:
-            return self.ddb_session.run(expr)
+            result = self.ddb_session.run(expr)
+            if result is None and not allow_empty_table:
+                raise RuntimeError("加载MySQL表返回空结果")
+            return result
         except Exception as e:
             raise RuntimeError(f"加载MySQL表失败: {str(e)}") from e
 
     def _process_schema(self, table_schema: Optional[Dict[str, str]]) -> Optional[str]:
-        """将schema字典转换为DolphinDB需要的表格式"""
+        """
+        将schema字典转换为DolphinDB需要的表格式
+        
+        :param table_schema: 列名到类型的映射字典
+        :return: DolphinDB中的schema表名，如果输入为空则返回None
+        """
         if not table_schema:
             return None
 
         if not isinstance(table_schema, dict):
             raise TypeError("schema必须是字典类型")
 
-        self.ddb_session.run(
-            f"""
-            schema = table({list(table_schema.keys())} as name, {list(table_schema.values())} as type)
-            """
-        )
-        return "schema"
+        # 验证schema中的值是否为字符串类型
+        for key, value in table_schema.items():
+            if not isinstance(value, str):
+                raise TypeError(f"schema中的值必须是字符串类型，但'{key}'的值为{type(value)}")
+
+        try:
+            self.ddb_session.run(
+                f"""
+                schema = table({list(table_schema.keys())} as name, {list(table_schema.values())} as type)
+                """
+            )
+            return "schema"
+        except Exception as e:
+            raise RuntimeError(f"处理schema失败: {str(e)}") from e
 
 
 def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
@@ -198,7 +233,10 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
     .. note::
         此函数使用DDBMySQLBridge类来处理数据库间的连接和数据传输。
     """
-    bridge = DDBMySQLBridge(ddb_uri, mysql_uri)
+    try:
+        bridge = DDBMySQLBridge(ddb_uri, mysql_uri)
+    except Exception as e:
+        raise RuntimeError(f"初始化DDBMySQLBridge失败: {str(e)}") from e
 
     def _extract_columns(schema_func):
         """
@@ -209,9 +247,13 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         :return: 所有列名的字符串和列名到类型的字典映射
         :rtype: tuple
         """
-        all_cols = ",".join(schema_func().map_columns_to_fields())
-        name_type = dict(schema_func().columns)
-        return all_cols, name_type
+        try:
+            schema = schema_func()
+            all_cols = ",".join(schema.map_columns_to_fields())
+            name_type = dict(schema.columns)
+            return all_cols, name_type
+        except Exception as e:
+            raise RuntimeError(f"提取列信息失败: {str(e)}") from e
     
     def _sync_table(schema_func, table_name, where_clause=""):
         """
@@ -224,104 +266,41 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         :param where_clause: SQL WHERE子句（可选）
         :type where_clause: str
         """
-        print(f"正在同步 {schema_func.__name__} 从 {table_name}...")
-        cols, name_type = _extract_columns(schema_func)
-        query = f"SELECT {cols} FROM {table_name}" + (
-            f" WHERE {where_clause}" if where_clause else ""
+        try:
+            print(f"正在同步 {schema_func.__name__} 从 {table_name}...")
+            cols, name_type = _extract_columns(schema_func)
+            query = f"SELECT {cols} FROM {table_name}" + (
+                f" WHERE {where_clause}" if where_clause else ""
+            )
+
+            data = bridge.load_table(query)
+            if table_name == "ASHAREEODPRICES":
+                data = data.rename(columns=FIELDS_MAPPING)
+
+            convert_wind_date_to_datetime(data, name_type, inplace=True)
+
+            bridge.ddb_operator.table_appender(
+                schema_func().db_name, schema_func().table_name, data
+            )
+            print(f"已完成 {schema_func.__name__} 从 {table_name} 的同步。\n")
+        except Exception as e:
+            raise RuntimeError(f"同步表 {table_name} 失败: {str(e)}") from e
+
+    try:
+        _sync_table(QlibTableSchema.instrument, "ASHAREDESCRIPTION")
+        _sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", 'S_INFO_EXCHMARKET="SSE"')
+        _sync_table(
+            QlibTableSchema.feature_daily,
+            "ASHAREEODPRICES",
+            "TRADE_DT BETWEEN 20210101 AND 20231231",
         )
-
-        data = bridge.load_table(query)
-        if table_name == "ASHAREEODPRICES":
-            data = data.rename(columns=FIELDS_MAPPING)
-
-        convert_wind_date_to_datetime(data, name_type, inplace=True)
-
-        bridge.ddb_operator.table_appender(
-            schema_func().db_name, schema_func().table_name, data
-        )
-        print(f"已完成 {schema_func.__name__} 从 {table_name} 的同步。\n")
-
-    _sync_table(QlibTableSchema.instrument, "ASHAREDESCRIPTION")
-    _sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", 'S_INFO_EXCHMARKET="SSE"')
-    _sync_table(
-        QlibTableSchema.feature_daily,
-        "ASHAREEODPRICES",
-        "TRADE_DT BETWEEN 20210101 AND 20231231",
-    )
+    except Exception as e:
+        raise RuntimeError(f"初始化QLib数据库失败: {str(e)}") from e
+    finally:
+        try:
+            bridge.close()
+        except:
+            pass
 
 
-# def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
-#     """
-#     从MySQL初始化QLib所需的DolphinDB数据库。
-#     该函数将MySQL中的数据写入DolphinDB，用于QLib的数据初始化。
-#     它创建并填充了三个主要表：Instrument、Calendar和FeatureDaily。
 
-#     :param ddb_uri: DolphinDB的连接URI
-#     :param mysql_uri: MySQL的连接URI
-#     :return: None
-
-#     .. note::
-#         此函数使用DolphinDB的原生脚本语法执行数据转换和加载操作。
-#     """
-#     bridge = DDBMySQLBridge(ddb_uri, mysql_uri)
-
-#     def _extract_columns(schema_func):
-#         cols = schema_func().columns
-#         all_cols = ",".join(col[0] for col in cols)
-#         name_type = dict(cols)
-#         partition_columns = schema_func().partition_columns
-#         return all_cols, name_type,partition_columns
-
-#     instrument_cols, instrument_name_type, instrument_partition_columns = _extract_columns(QlibTableSchema.instrument)
-#     calendar_cols, calendar_name_type,calendar_partition_columns = _extract_columns(QlibTableSchema.calendar)
-#     feature_daily_cols, feature_daily_name_type,feature_daily_partition_columns = _extract_columns(
-#         QlibTableSchema.feature_daily
-#     )
-
-#     bridge.ddb_session.upload(
-#         {
-#             "instrument_name_type": instrument_name_type,
-#             "calendar_name_type": calendar_name_type,
-#             "feature_daily_name_type": feature_daily_name_type,
-#         }
-#     )
-
-#     # 定义DolphinDB脚本
-#     ddb_scripts = {
-#         "convert_function": """
-#         def convert_winddate_type_to_ddb(mutable tb, name_type) {
-#             for (col in name_type.keys()) {
-#                 if (name_type[col] == DATE) {
-#                     tb.replaceColumn!(col, temporalParse(tb[col]$STRING, "yyyy.MM.dd"));
-#                 } else if (name_type[col] == DOUBLE) {
-#                     tb.replaceColumn!(col, tb[col]$DOUBLE);
-#                 }
-#             }
-#         }
-#         """,
-#         "sync_instrument": f"""
-#         QlibInstrumentDB = database("dfs://QlibInstrument");
-#         mysql::loadEx(mysql_conn, QlibInstrumentDB, `Instrument,`{instrument_partition_columns},
-#             "select {instrument_cols} from ASHAREDESCRIPTION",,,,convert_winddate_type_to_ddb{{,instrument_name_type}});
-#         """,
-#         "sync_calendar": f"""
-#         QlibCalendarDB = database("dfs://QlibCalendar");
-#         mysql::loadEx(mysql_conn, QlibCalendarDB, `Calendar,`{calendar_partition_columns},
-#             "select {calendar_cols} from ASHARECALENDAR WHERE S_INFO_EXCHMARKET='SZSE'",,,,convert_winddate_type_to_ddb{{,calendar_name_type}});
-#         """,
-#         "sync_feature_daily": f"""
-#         QlibFeatureDailyDB = database("dfs://QlibFeature");
-#         mysql::loadEx(mysql_conn, QlibFeatureDailyDB, `FeatureDaily,`{feature_daily_partition_columns},
-#             "select {feature_daily_cols} from ASHAREEODPRICES WHERE TRADE_DT BETWEEN 20210101 AND 20241231",,,,convert_winddate_type_to_ddb{{,feature_daily_name_type}});
-#         """,
-#     }
-
-#     # 执行DolphinDB脚本
-#     for script_name, script in ddb_scripts.items():
-#         try:
-#             bridge.ddb_session.run(script)
-#             print(f"成功执行脚本: {script_name}")
-#         except Exception as e:
-#             print(f"执行脚本 {script_name} 时出错: {str(e)}")
-
-#     bridge.close()
