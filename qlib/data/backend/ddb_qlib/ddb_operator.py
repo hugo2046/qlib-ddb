@@ -337,10 +337,9 @@ def create_calendar_table(uri: str) -> None:
     create_qlib_table(uri, schema)
 
 
-def create_instrument_table(uri: str) -> None:
-    schema = QlibTableSchema.instrument()
+def create_instrument_table(uri: str, table_name: str = "ashares") -> None:
+    schema = QlibTableSchema.instrument(table_name)
     create_qlib_table(uri, schema)
-
 
 
 def clean_qlib_db(uri: str) -> None:
@@ -360,3 +359,242 @@ def clean_qlib_db(uri: str) -> None:
     session.run(expr)
 
 
+def write_df_to_ddb(
+    db_name: str,
+    table_name: str,
+    data: pd.DataFrame,
+    upsert: bool = False,
+    key_col_names: Optional[Union[str, List[str]]] = None,
+    sort_columns: Optional[Union[str, List[str]]] = None,
+    uri: Optional[str] = None,
+) -> None:
+    """
+    将DataFrame数据写入DolphinDB表。
+
+    :param db_name: 数据库名称
+    :type db_name: str
+    :param table_name: 表名
+    :type table_name: str
+    :param data: 需要写入的DataFrame数据
+    :type data: pd.DataFrame
+    :param upsert: 是否使用upsert方式写入，默认为False（追加），True则使用upsert
+    :type upsert: bool
+    :param key_col_names: upsert时用于唯一性判断的列名
+    :type key_col_names: Optional[Union[str, List[str]]]
+    :param sort_columns: upsert时用于排序的列名
+    :type sort_columns: Optional[Union[str, List[str]]]
+    :param conn_mgr: DDBClient连接管理器，默认为None（需外部提前初始化）
+    :type conn_mgr: Optional[DDBClient]
+    """
+    
+    
+    if uri is None:
+        raise ValueError("请传入已初始化的DDBClient实例(conn_mgr)")
+
+    config = DDBConnectionSpec(uri=uri)
+    connector = DDBClient(config)
+    operator = DDBTableOperator(connector)
+    if upsert:
+        operator.table_upsert(
+            db_name=db_name,
+            table_name=table_name,
+            data=data,
+            key_col_names=key_col_names,
+            sort_columns=sort_columns,
+        )
+    else:
+        operator.table_appender(
+            db_name=db_name,
+            table_name=table_name,
+            data=data,
+        )
+        
+        
+def import_instruments_csv_to_ddb(
+    data_or_path: Union[str, pd.DataFrame],
+    db_name: str,
+    table_name: str,
+    uri: str,
+    windcode_convert: bool = True,
+    sep: str = "\t",
+    header: Union[int, None] = None,
+    col_names: List[str] = ["S_INFO_WINDCODE", "S_INFO_LISTDATE", "S_INFO_DELISTDATE"],
+) -> None:
+    """
+    从CSV文件或DataFrame读取成分股数据并写入DolphinDB表。
+
+    :param data_or_path: CSV文件路径或DataFrame
+    :type data_or_path: str or pd.DataFrame
+    :param db_name: DolphinDB数据库名
+    :type db_name: str
+    :param table_name: DolphinDB表名
+    :type table_name: str
+    :param uri: DolphinDB连接URI
+    :type uri: str
+    :param windcode_convert: 是否将windcode转换为"000001.SZ"格式，默认为True
+    :type windcode_convert: bool
+    :param sep: CSV分隔符，默认为制表符
+    :type sep: str
+    :param header: CSV文件头，默认为None
+    :type header: int or None
+    :param col_names: 列名列表，默认为["S_INFO_WINDCODE", "S_INFO_LISTDATE", "S_INFO_DELISTDATE"]
+    :type col_names: List[str]
+    """
+
+    try:
+        # 判断输入类型
+        if isinstance(data_or_path, str):
+            df = pd.read_csv(data_or_path, sep=sep, header=header)
+            df.columns = col_names
+        elif isinstance(data_or_path, pd.DataFrame):
+            df = data_or_path.copy()
+            # 如果列名不一致，尝试重命名
+            if list(df.columns) != col_names:
+                df.columns = col_names
+        else:
+            raise ValueError("data_or_path 必须为文件路径字符串或DataFrame对象")
+
+        # 可选：转换windcode格式为"000001.SZ"
+        if windcode_convert:
+            df["S_INFO_WINDCODE"] = df["S_INFO_WINDCODE"].apply(
+                lambda x: f"{x[-6:]}.{x[:2]}"
+            )
+
+        # 转换日期列为datetime64[ns]
+        for col in ["S_INFO_LISTDATE", "S_INFO_DELISTDATE"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+        # 写入DolphinDB
+        write_df_to_ddb(db_name, table_name, df, uri=uri)
+    except Exception as e:
+        raise ValueError("Failed to import instruments data to DolphinDB") from e
+    
+    
+def import_calendar_csv_to_ddb(
+    data_or_path: Union[str, pd.DataFrame],
+    db_name: str,
+    table_name: str,
+    uri: str,
+    col_name: str = "TRADE_DAYS",
+) -> None:
+    """
+    从CSV文件或DataFrame读取交易日历数据并写入DolphinDB表。
+
+    :param data_or_path: CSV文件路径或DataFrame
+    :type data_or_path: str or pd.DataFrame
+    :param db_name: DolphinDB数据库名
+    :type db_name: str
+    :param table_name: DolphinDB表名
+    :type table_name: str
+    :param uri: DolphinDB连接URI
+    :type uri: str
+    :param col_name: 日历列名，默认为"TRADE_DAYS"
+    :type col_name: str
+    """
+
+    try:
+        # 判断输入类型
+        if isinstance(data_or_path, str):
+            df = pd.read_csv(data_or_path)
+        elif isinstance(data_or_path, pd.DataFrame):
+            df = data_or_path.copy()
+        else:
+            raise ValueError("data_or_path 必须为文件路径字符串或DataFrame对象")
+
+        # 检查是否包含指定列
+        if col_name not in df.columns:
+            raise ValueError(f"{col_name} column is missing")
+
+        # 转换为datetime类型
+        df[col_name] = pd.to_datetime(df[col_name], errors="coerce")
+        # 只保留日历列
+        df = df[[col_name]]
+
+        # 写入DolphinDB
+        write_df_to_ddb(db_name=db_name, table_name=table_name, data=df, uri=uri)
+    except Exception as e:
+        raise ValueError("Failed to import calendar data to DolphinDB") from e
+    
+def import_features_csv_to_ddb(
+    data_or_path: Union[str, pd.DataFrame],
+    db_name: str,
+    table_name: str,
+    uri: str,
+    col_mapping: Optional[Dict[str, str]] = None,
+    upsert: bool = False,
+) -> None:
+    """
+    从CSV文件或DataFrame读取特征数据并写入DolphinDB表。
+
+    :param data_or_path: CSV文件路径或DataFrame
+    :type data_or_path: str or pd.DataFrame
+    :param db_name: DolphinDB数据库名
+    :type db_name: str
+    :param table_name: DolphinDB表名
+    :type table_name: str
+    :param uri: DolphinDB连接URI
+    :type uri: str
+    :param col_mapping: 列名映射，默认为FEATURES_TABLE_MAPPING
+    :type col_mapping: Optional[Dict[str, str]]
+    :param upsert: 是否upsert写入，默认为False
+    :type upsert: bool
+    """
+
+    FEATURES_TABLE_MAPPING: Dict = {
+        "TRADE_DT": "date",
+        "S_INFO_WINDCODE": "code",
+        "S_DQ_ADJOPEN": "open",
+        "S_DQ_ADJHIGH": "high",
+        "S_DQ_ADJLOW": "low",
+        "S_DQ_ADJCLOSE": "close",
+        "S_DQ_VOLUME": "volume",
+        "S_DQ_AMOUNT": "amount",
+        "S_DQ_AVGPRICE": "vwap",
+        "S_DQ_ADJFACTOR": "factor",
+    }
+
+    try:
+        # 判断输入类型
+        if isinstance(data_or_path, str):
+            df = pd.read_csv(data_or_path)
+        elif isinstance(data_or_path, pd.DataFrame):
+            df = data_or_path.copy()
+        else:
+            raise ValueError("data_or_path 必须为文件路径字符串或DataFrame对象")
+
+        if df.empty:
+            raise ValueError("DataFrame is empty")
+
+        if col_mapping is None:
+            col_mapping = FEATURES_TABLE_MAPPING
+
+        # 列名重命名
+        df.rename(columns=col_mapping, inplace=True)
+
+        # 检查缺失列
+        must_have = ["date", "code", "open", "high", "low", "close", "factor"]
+        optional = ["vwap", "amount", "volume"]
+        missing_cols = [v for v in must_have if v not in df.columns]
+        if missing_cols:
+            raise ValueError(f"缺失必要列: {missing_cols}")
+        warn_cols = [v for v in optional if v not in df.columns]
+        if warn_cols:
+            import warnings
+
+            warnings.warn(f"可选列缺失: {warn_cols}")
+
+        # 转换date为datetime类型
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+        # 写入DolphinDB
+        write_df_to_ddb(
+            db_name=db_name,
+            table_name=table_name,
+            data=df,
+            uri=uri,
+            upsert=upsert,
+            key_col_names=["code", "date"] if upsert else None,
+        )
+    except Exception as e:
+        raise ValueError("Failed to import features data to DolphinDB") from e
