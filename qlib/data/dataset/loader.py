@@ -220,8 +220,11 @@ class QlibDataLoader(DLWParser):
         inst_processors = (
             self.inst_processors if isinstance(self.inst_processors, list) else self.inst_processors.get(gp_name, [])
         )
-        df = D.features(instruments, exprs, start_time, end_time, freq=freq, inst_processors=inst_processors)
+        
+        df:pd.DataFrame = D.features(instruments, exprs, start_time, end_time, freq=freq, inst_processors=inst_processors)
+   
         df.columns = names
+        
         if self.swap_level:
             df = df.swaplevel().sort_index()  # NOTE: if swaplevel, return <datetime, instrument>
         return df

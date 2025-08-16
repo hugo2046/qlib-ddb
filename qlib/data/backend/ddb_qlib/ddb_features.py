@@ -96,7 +96,24 @@ def register_ddb_functions_to_qlib(session: ddb.Session) -> None:
 def normalize_fields_to_ddb(
     fields: Union[str, List[str], Dict],
 ) -> Tuple[Dict, List, bool]:
+    """
+    规范化字段为DolphinDB表达式。
 
+    参数
+    ----------
+    fields : Union[str, List[str], Dict]
+        输入的字段，可以是字符串、字符串列表或字典。字符串或列表会被转换为字典形式，字典的键为字段名，值为表达式名称。
+
+    返回
+    ----------
+    Tuple[Dict, List, bool]
+        - normalized_expr : Dict
+            规范化后的DolphinDB表达式字典，键为DolphinDB表达式，值为表达式名称。
+        - base_fields : List[str]
+            从表达式中提取的基础字段列表。
+        - is_pure_fields : bool
+            是否为纯字段表达式（如$close, $open），若是则直接查询表。
+    """
     if isinstance(fields, str):
         fields: List = [fields]
 
@@ -253,11 +270,23 @@ def fetch_features_from_ddb(
             raise KeyError("查询结果缺少 'code' 或 'date' 列")
 
         data.index.names = ["instrument", "datetime"]
+        
+    data = data.sort_index()
     # 重命名columns将$改为去掉$或根据已有的字典进行重命名
-    return (
-        data.sort_index()
-        .rename(columns=reversed_expr)
-    )
+    try:
+        aliases_order = list(normalized_expr.values())
+        # 只保留实际存在的 alias，避免 reindex 新增空列
+        ordered_aliases = [c for c in aliases_order if c in data.columns]
+        # 若希望严格要求所有列必须存在，可以改为：
+        # missing = [c for c in aliases_order if c not in data.columns]; if missing: raise KeyError(...)
+        data = data.reindex(columns=ordered_aliases)
+    except Exception:
+        # 出错则保持原始列顺序
+        pass
+
+    # 最后再重命名 alias -> 输出列名
+    data = data.rename(columns=reversed_expr)
+    return data
 
 
 # # 用于兼容qlib的表达式
