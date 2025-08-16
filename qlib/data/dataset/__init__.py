@@ -386,10 +386,11 @@ class TSDataSampler:
         self.fillna_type = fillna_type
         assert get_level_index(data, "datetime") == 0
         self.data = data.swaplevel().sort_index().copy()
-        data.drop(
-            data.columns, axis=1, inplace=True
-        )  # data is useless since it's passed to a transposed one, hard code to free the memory of this dataframe to avoid three big dataframe in the memory(including: data, self.data, self.data_arr)
-
+        # data is useless since it's passed to a transposed one, hard code to free the memory of this dataframe to avoid three big dataframe in the memory(including: data, self.data, self.data_arr)
+        self.data.dropna(axis=1, how="all", inplace=True) 
+        if self.data.shape[1] == 0:
+            raise ValueError("TSDataSampler: all columns are empty after dropna(axis=1, how='all'). Check input data / instruments.")
+        
         kwargs = {"object": self.data}
         if dtype is not None:
             kwargs["dtype"] = dtype
