@@ -97,44 +97,58 @@ def normalize_fields_to_ddb(
     fields: Union[str, List[str], Dict],
 ) -> Tuple[Dict, List, bool]:
     """
-    规范化字段为DolphinDB表达式。
-
-    参数
-    ----------
-    fields : Union[str, List[str], Dict]
-        输入的字段，可以是字符串、字符串列表或字典。字符串或列表会被转换为字典形式，字典的键为字段名，值为表达式名称。
-
-    返回
-    ----------
-    Tuple[Dict, List, bool]
-        - normalized_expr : Dict
-            规范化后的DolphinDB表达式字典，键为DolphinDB表达式，值为表达式名称。
-        - base_fields : List[str]
-            从表达式中提取的基础字段列表。
-        - is_pure_fields : bool
-            是否为纯字段表达式（如$close, $open），若是则直接查询表。
+    规范化字段为 DolphinDB 表达式，并保持输入顺序（list 或 dict 的顺序）。
+    - 支持 str / list / dict 输入。
+    - 对 list 输入利用 dict comprehension 去重且保持顺序（fields_od 的 key 顺序）。
+    - 逐项调用 normalize_cache_fields([expr]) 以保证归一化结果按 fields_od 顺序产生。
+    - 若归一化后的 normalized key 重复则跳过后续重复项（与 fields_od 的去重语义一致）。
+    - 若不同输入在 adapt 为 DolphinDB 表达式后冲突，则抛错提醒。
     """
+    # 统一为 list
     if isinstance(fields, str):
-        fields: List = [fields]
+        fields = [fields]
 
+    # 保留输入顺序并去重：list -> dict comprehension（保持顺序），dict 保持原有顺序（py3.7+）
     if isinstance(fields, list):
-        fields: Dict = {v: f"ExprName{i}" for v, i in zip(fields, range(len(fields)))}
+        fields_od = {expr: f"ExprName{i}" for i, expr in enumerate(fields)}
+    elif isinstance(fields, dict):
+        fields_od = fields
+    else:
+        raise TypeError("fields must be str, list or dict")
 
-    exprs: Dict = dict(
-        zip(normalize_cache_fields(list(fields.keys())), list(fields.values()))
-    )
-    # 将qlib表达式转换为DolphinDB表达式
-    normalized_expr: Dict = {
-        adapt_qlib_expr_syntax_for_ddb(k, OPERATOR_MAPPING, True): v
-        for k, v in exprs.items()
-    }
-    # 获取基础数据
-    base_fields: List[str] = extract_fields_from_expressions(list(exprs.keys()))
-    # 判断是否为纯字段表达式（如$close, $open），如果是则直接查询表
-    is_pure_fields: bool = is_pure_fields_expressions(list(exprs.keys()))
+    # 逐项归一化，按 fields_od key 顺序，归一化阶段去重
+    exprs: Dict[str, str] = {}
+    for expr, alias in fields_od.items():
+        nk_list = normalize_cache_fields([expr])
+        if not nk_list:
+            raise ValueError(f"normalize_cache_fields 返回空结果，输入: {expr}")
+        nk = nk_list[0]
+        if nk in exprs:
+            # 已存在相同 normalized key，跳过（与 fields_od 的去重语义一致）
+            continue
+        exprs[nk] = alias
+
+    # adapt 为 DolphinDB 表达式，保持顺序；检测 adapt 后的冲突
+    normalized_expr: Dict[str, str] = {}
+    for k_norm, alias in exprs.items():
+        adapted = adapt_qlib_expr_syntax_for_ddb(k_norm, OPERATOR_MAPPING, True)
+        if adapted in normalized_expr:
+            raise ValueError(f"归一化后出现重复的DolphinDB表达式: {adapted}")
+        normalized_expr[adapted] = alias
+
+    # --- 在此内联实现 base_fields 提取并保持输入顺序（不再依赖 extract_fields_from_expressions） ---
+    pattern = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)")
+    base_fields: List[str] = []
+    for expr in exprs.keys():  # exprs 已按输入顺序构建
+        for fld in pattern.findall(expr):
+            if fld not in base_fields:
+                base_fields.append(fld)
+
+    # --- 在此内联实现是否为纯字段表达式的判断（基于原始输入顺序 fields_od） ---
+    pure_pattern = re.compile(r"^\$([a-zA-Z_][a-zA-Z0-9_]*)$")
+    is_pure_fields: bool = all(bool(pure_pattern.match(e)) for e in fields_od.keys())
 
     return normalized_expr, base_fields, is_pure_fields
-
 
 # ddb_features使用
 def fetch_features_from_ddb(
@@ -173,9 +187,8 @@ def fetch_features_from_ddb(
         包含查询结果的数据框，以 ["instrument", "datetime"] 为索引
     """
     from .schemas import QlibTableSchema
-
+   
     normalized_expr, base_fields, is_pure_fields = normalize_fields_to_ddb(fields)
-
     reversed_expr: Dict = {v: k for k, v in normalized_expr.items()}
 
     _freq: str = "daily" if freq == "day" else "min"
@@ -280,12 +293,13 @@ def fetch_features_from_ddb(
         # 若希望严格要求所有列必须存在，可以改为：
         # missing = [c for c in aliases_order if c not in data.columns]; if missing: raise KeyError(...)
         data = data.reindex(columns=ordered_aliases)
-    except Exception:
+    except Exception as e:
         # 出错则保持原始列顺序
-        pass
-
+        raise e
+    
     # 最后再重命名 alias -> 输出列名
     data = data.rename(columns=reversed_expr)
+
     return data
 
 
