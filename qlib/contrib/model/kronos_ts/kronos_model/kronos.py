@@ -473,9 +473,6 @@ class KronosPredictor:
 
     def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose):
 
-        # x_tensor = torch.from_numpy(np.array(x).astype(np.float32)).to(self.device)
-        # x_stamp_tensor = torch.from_numpy(np.array(x_stamp).astype(np.float32)).to(self.device)
-        # y_stamp_tensor = torch.from_numpy(np.array(y_stamp).astype(np.float32)).to(self.device)
         # 保持张量并对齐设备/精度
         x = x.to(self.device, dtype=torch.float32)
         x_stamp = x_stamp.to(self.device, dtype=torch.float32)

@@ -23,7 +23,7 @@ from ....log import get_module_logger
 from ..pytorch_utils import count_parameters
 from ....data.dataset.handler import DataHandlerLP
 from .kronos_model import Kronos, KronosTokenizer
-from .kronos_model.kronos import auto_regressive_inference, calc_time_stamps
+from .kronos_model.kronos import auto_regressive_inference,calc_time_stamps
 
 class DailyBatchSampler(Sampler):
     """按日期分批的采样器
