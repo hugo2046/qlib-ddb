@@ -227,19 +227,21 @@ def fetch_features_from_ddb(
 
     # 判断是否为纯字段表达式（如$close, $open），如果是则直接查询表
     if is_pure_fields:
+     
         # 创建基础查询语句部分
         base_query = (
             session.loadTable(table_name, f"dfs://{db_name}")
             .select(["code", "date"] + base_fields)
-            .where(f"date between pair(start_time,end_time)")
+            .where(f"date between pair({start_time},{end_time})")
         )
-
+      
         # 根据instruments类型选择不同的查询方式
         if isinstance(instruments, list):
             # 如果是列表，直接使用in条件过滤
             data: pd.DataFrame = (
                 base_query.where(f"code in instruments").sort(["date", "code"]).toDF()
             )
+
         elif isinstance(instruments, dict):
             # 如果是字典，使用conditionalFilter进行复杂的日期-股票映射过滤
             # 先在DolphinDB中创建日期-股票映射,用以兼容spans
@@ -253,7 +255,7 @@ def fetch_features_from_ddb(
                 .sort(["date", "code"])
                 .toDF()
             )
-
+         
     else:
 
         # 使用mr防止因子计算时OOM
@@ -283,8 +285,10 @@ def fetch_features_from_ddb(
             raise KeyError("查询结果缺少 'code' 或 'date' 列")
 
         data.index.names = ["instrument", "datetime"]
-        
+
     data = data.sort_index()
+    if is_pure_fields:
+        return data
     # 重命名columns将$改为去掉$或根据已有的字典进行重命名
     try:
         aliases_order = list(normalized_expr.values())

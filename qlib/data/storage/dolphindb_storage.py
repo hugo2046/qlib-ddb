@@ -252,7 +252,7 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
             
         else:
             raise TypeError(f"不支持的索引类型: type(i) = {type(i)}")
-    
+
         df: pd.DataFrame = fetch_features_from_ddb(
             DBClient.session,
             self.instrument,

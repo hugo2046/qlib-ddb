@@ -743,6 +743,7 @@ class DatasetProvider(abc.ABC):
         column_names:List = [column_names] if isinstance(column_names,str) else column_names
         split_column_names:List[List[str]] = split_list_by_length(column_names, 30)
         dfs:List[pd.DataFrame] = [ExpressionD.expression(inst, fields, start_time, end_time, freq) for fields in split_column_names]
+
         dfs_filter_empty:List[pd.DataFrame] = [df for df in dfs if isinstance(df, (pd.Series, pd.DataFrame)) and not df.empty]
         data: pd.DataFrame = pd.concat(dfs_filter_empty,axis=1)
 
@@ -1056,7 +1057,6 @@ class LocalExpressionProvider(ExpressionProvider):
 
         # 使用ddb表达但也兼容qlib原有表达式,相比qlib表达,缺失对于前序计算期的支持
         # 比如计算MA10时wind为10所以应该在原有起始日期前10天开始计算.但ddb没有考虑这种情况.
-
         series:pd.Series = pd.Series(np.float32)
         try:
             # 这样便不会从dolphindb_storage中获取数据除非使用的feature调用
