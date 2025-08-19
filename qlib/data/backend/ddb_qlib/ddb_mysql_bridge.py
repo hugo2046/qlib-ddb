@@ -171,9 +171,9 @@ class DDBMySQLBridge:
         params = [
             "mysql_conn",  # conn
             f"""'{table_or_query}'""",  # tableOrQuery
-            self._process_schema(table_schema) if table_schema else "NULL",  # schema
-            str(start_row) if start_row is not None else "NULL",  # startRow
-            str(row_num) if row_num is not None else "NULL",  # rowNum
+            self._process_schema(table_schema) if table_schema else " ",  # schema
+            str(start_row) if start_row is not None else " ",  # startRow
+            str(row_num) if row_num is not None else " ",  # rowNum
             "true" if allow_empty_table else "false",  # allowEmptyTable
         ]
 
@@ -217,28 +217,51 @@ class DDBMySQLBridge:
             raise RuntimeError(f"处理schema失败: {str(e)}") from e
 
 
-def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
+class QlibDDBMySQLInitializer:
     """
-    从MySQL初始化QLib所需的DolphinDB数据库。
-
-    该函数将MySQL中的数据写入DolphinDB，用于QLib的数据初始化。
-    它创建并填充了三个主要表：Instrument、Calendar和FeatureDaily。
-
-    :param ddb_uri: DolphinDB的连接URI
-    :type ddb_uri: str
-    :param mysql_uri: MySQL的连接URI
-    :type mysql_uri: str
-    :return: None
-
-    .. note::
-        此函数使用DDBMySQLBridge类来处理数据库间的连接和数据传输。
+    QLib DolphinDB MySQL初始化器类
+    
+    该类用于从MySQL初始化QLib所需的DolphinDB数据库。
+    支持单独同步每个表或者全部同步。
     """
-    try:
-        bridge = DDBMySQLBridge(ddb_uri, mysql_uri)
-    except Exception as e:
-        raise RuntimeError(f"初始化DDBMySQLBridge失败: {str(e)}") from e
-
-    def _extract_columns(schema_func):
+    
+    def __init__(self, ddb_uri: str, mysql_uri: str):
+        """
+        初始化QlibDDBMySQLInitializer实例
+        
+        :param ddb_uri: DolphinDB的连接URI
+        :type ddb_uri: str
+        :param mysql_uri: MySQL的连接URI
+        :type mysql_uri: str
+        """
+        self.ddb_uri = ddb_uri
+        self.mysql_uri = mysql_uri
+        self._bridge = None
+    
+    def __enter__(self):
+        """上下文管理器入口"""
+        self._bridge = DDBMySQLBridge(self.ddb_uri, self.mysql_uri)
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器出口"""
+        if self._bridge:
+            try:
+                self._bridge.close()
+            except:
+                pass
+        return False
+    
+    def _get_bridge(self):
+        """获取bridge实例，如果不存在则创建"""
+        if self._bridge is None:
+            try:
+                self._bridge = DDBMySQLBridge(self.ddb_uri, self.mysql_uri)
+            except Exception as e:
+                raise RuntimeError(f"初始化DDBMySQLBridge失败: {str(e)}") from e
+        return self._bridge
+    
+    def _extract_columns(self, schema_func):
         """
         从给定的schema函数中提取列信息。
 
@@ -255,7 +278,7 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         except Exception as e:
             raise RuntimeError(f"提取列信息失败: {str(e)}") from e
     
-    def _sync_table(schema_func, table_name, where_clause=""):
+    def _sync_table(self, schema_func, table_name, where_clause=""):
         """
         同步指定的MySQL表到DolphinDB。
 
@@ -266,9 +289,10 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         :param where_clause: SQL WHERE子句（可选）
         :type where_clause: str
         """
+        bridge = self._get_bridge()
         try:
             print(f"正在同步 {schema_func.__name__} 从 {table_name}...")
-            cols, name_type = _extract_columns(schema_func)
+            cols, name_type = self._extract_columns(schema_func)
             query = f"SELECT {cols} FROM {table_name}" + (
                 f" WHERE {where_clause}" if where_clause else ""
             )
@@ -276,7 +300,6 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
             data = bridge.load_table(query)
             if table_name == "ASHAREEODPRICES":
                 data = data.rename(columns=FIELDS_MAPPING)
-
             convert_wind_date_to_datetime(data, name_type, inplace=True)
 
             bridge.ddb_operator.table_appender(
@@ -285,22 +308,81 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
             print(f"已完成 {schema_func.__name__} 从 {table_name} 的同步。\n")
         except Exception as e:
             raise RuntimeError(f"同步表 {table_name} 失败: {str(e)}") from e
-
-    try:
-        _sync_table(QlibTableSchema.instrument, "ASHAREDESCRIPTION")
-        _sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", 'S_INFO_EXCHMARKET="SSE"')
-        _sync_table(
-            QlibTableSchema.feature_daily,
-            "ASHAREEODPRICES",
-            "TRADE_DT BETWEEN 20210101 AND 20231231",
-        )
-    except Exception as e:
-        raise RuntimeError(f"初始化QLib数据库失败: {str(e)}") from e
-    finally:
+    
+    def sync_instrument(self):
+        """
+        同步Instrument表（ASHAREDESCRIPTION）
+        """
+        self._sync_table(QlibTableSchema.instrument, "ASHAREDESCRIPTION")
+    
+    def sync_calendar(self, exchange_market: str = "SSE"):
+        """
+        同步Calendar表（ASHARECALENDAR）
+        
+        :param exchange_market: 交易所市场，默认为"SSE"
+        :type exchange_market: str
+        """
+        where_clause = f'S_INFO_EXCHMARKET="{exchange_market}"'
+        self._sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", where_clause)
+    
+    def sync_feature_daily(self, start_date: str = "20100101", end_date: str = "20241231"):
+        """
+        同步FeatureDaily表（ASHAREEODPRICES）
+        
+        :param start_date: 开始日期，格式：YYYYMMDD
+        :type start_date: str
+        :param end_date: 结束日期，格式：YYYYMMDD
+        :type end_date: str
+        """
+        where_clause = f"TRADE_DT BETWEEN {start_date} AND {end_date}"
+        self._sync_table(QlibTableSchema.feature_daily, "ASHAREEODPRICES", where_clause)
+    
+    def sync_all(self, exchange_market: str = "SSE", start_date: str = "20100101", end_date: str = "20241231"):
+        """
+        同步所有表
+        
+        :param exchange_market: 交易所市场，默认为"SSE"
+        :type exchange_market: str
+        :param start_date: 开始日期，格式：YYYYMMDD
+        :type start_date: str
+        :param end_date: 结束日期，格式：YYYYMMDD
+        :type end_date: str
+        """
         try:
-            bridge.close()
-        except:
-            pass
+            self.sync_instrument()
+            self.sync_calendar(exchange_market)
+            self.sync_feature_daily(start_date, end_date)
+        except Exception as e:
+            raise RuntimeError(f"同步所有表失败: {str(e)}") from e
+    
+    def close(self):
+        """关闭连接"""
+        if self._bridge:
+            try:
+                self._bridge.close()
+            except:
+                pass
+            self._bridge = None
+
+
+def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
+    """
+    从MySQL初始化QLib所需的DolphinDB数据库。
+
+    该函数将MySQL中的数据写入DolphinDB，用于QLib的数据初始化。
+    它创建并填充了三个主要表：Instrument、Calendar和FeatureDaily。
+
+    :param ddb_uri: DolphinDB的连接URI
+    :type ddb_uri: str
+    :param mysql_uri: MySQL的连接URI
+    :type mysql_uri: str
+    :return: None
+
+    .. note::
+        此函数为向后兼容性保留，建议使用QlibDDBMySQLInitializer类。
+    """
+    with QlibDDBMySQLInitializer(ddb_uri, mysql_uri) as initializer:
+        initializer.sync_all()
 
 
 
