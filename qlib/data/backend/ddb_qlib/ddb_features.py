@@ -139,9 +139,12 @@ def normalize_fields_to_ddb(
     # --- 在此内联实现 base_fields 提取并保持输入顺序（不再依赖 extract_fields_from_expressions） ---
     pattern = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)")
     base_fields: List[str] = []
+    # 过滤掉 code 和 date 字段
+    excluded_fields = {'code', 'date'}
+    
     for expr in exprs.keys():  # exprs 已按输入顺序构建
         for fld in pattern.findall(expr):
-            if fld not in base_fields:
+            if fld not in base_fields and fld not in excluded_fields:
                 base_fields.append(fld)
 
     # --- 在此内联实现是否为纯字段表达式的判断（基于原始输入顺序 fields_od） ---
