@@ -122,7 +122,7 @@ class QlibTableSchema:
             engine="PKEY",
             primary_key="TRADE_DAYS",
             partitions=np.array(
-                pd.date_range("2010-01-01", "2045-12-31", freq="YE"),
+                pd.date_range("2000-01-01", "2060-12-31", freq="YE"),
                 dtype="datetime64[M]",
             ),
         )
