@@ -6,7 +6,7 @@ LastEditTime: 2025-02-20 17:24:15
 Description: ddb连接mysql
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional,List
 from urllib.parse import urlparse, unquote, parse_qs
 
 import pandas as pd
@@ -170,7 +170,7 @@ class DDBMySQLBridge:
         # 构建参数映射
         params = [
             "mysql_conn",  # conn
-            f"""'{table_or_query}'""",  # tableOrQuery
+            f'"{table_or_query}"',  # tableOrQuery
             self._process_schema(table_schema) if table_schema else " ",  # schema
             str(start_row) if start_row is not None else " ",  # startRow
             str(row_num) if row_num is not None else " ",  # rowNum
@@ -298,7 +298,7 @@ class QlibDDBMySQLInitializer:
             )
 
             data = bridge.load_table(query)
-            if table_name == "ASHAREEODPRICES":
+            if table_name in "ASHAREEODPRICES":
                 data = data.rename(columns=FIELDS_MAPPING)
             convert_wind_date_to_datetime(data, name_type, inplace=True)
 
@@ -336,6 +336,82 @@ class QlibDDBMySQLInitializer:
         """
         where_clause = f"TRADE_DT BETWEEN {start_date} AND {end_date}"
         self._sync_table(QlibTableSchema.feature_daily, "ASHAREEODPRICES", where_clause)
+    
+    def sync_index_daily(self, index_codes: List[str], start_date: str = "20100101", end_date: str = "20241231"):
+        """
+        同步指数日线数据到专门的IndexDaily表
+        
+        :param index_codes: 指数代码列表或单个指数代码
+        :type index_codes: List[str] 或 str
+        :param start_date: 开始日期，格式：YYYYMMDD
+        :type start_date: str
+        :param end_date: 结束日期，格式：YYYYMMDD
+        :type end_date: str
+        :raises RuntimeError: 当同步失败时抛出异常
+        """
+        # 参数标准化：确保index_codes为列表
+        if isinstance(index_codes, str):
+            index_codes = [index_codes]
+        elif not isinstance(index_codes, list):
+            raise TypeError("index_codes必须是字符串或字符串列表")
+        
+        if not index_codes:
+            raise ValueError("index_codes不能为空")
+        
+        # 构建WHERE条件
+        if len(index_codes) == 1:
+            select_index_code = f"S_INFO_WINDCODE = '{index_codes[0]}'"
+        else:
+            # 为每个代码添加引号
+            quoted_codes = [f"'{code}'" for code in index_codes]
+            select_index_code = f"S_INFO_WINDCODE IN ({','.join(quoted_codes)})"
+            
+        bridge = self._get_bridge()
+        try:
+            print(f"正在同步指数 {','.join(index_codes)} 从 AINDEXEODPRICES 至 IndexDaily 表...")
+            
+            # 定义指数列映射
+            index_columns = (
+                "TRADE_DT as date, "
+                "S_INFO_WINDCODE as code, "
+                "S_DQ_OPEN as open, "
+                "S_DQ_HIGH as high, "
+                "S_DQ_LOW as low, "
+                "S_DQ_CLOSE as close, "
+                "S_DQ_VOLUME as volume, "
+                "S_DQ_AMOUNT as amount, "
+                "0 as factor, "
+                "0 as vwap"
+            )
+            
+            query = (
+                f"SELECT {index_columns} FROM AINDEXEODPRICES "
+                f"WHERE TRADE_DT BETWEEN {start_date} AND {end_date} "
+                f"AND {select_index_code}"
+            )
+
+            data = bridge.load_table(query)
+            
+            if data.empty:
+                print(f"警告: 指数 {','.join(index_codes)} 在时间范围 {start_date}-{end_date} 内无数据")
+                return
+           
+            # 转换日期格式
+            convert_wind_date_to_datetime(data, {"date": "DATE"}, inplace=True)
+
+            # 获取指数表信息
+            features_schema = QlibTableSchema.feature_daily()
+            bridge.ddb_operator.table_appender(
+                features_schema.db_name, 
+                features_schema.table_name, 
+                data
+            )
+            
+            print(f"已完成指数数据同步：{len(data)} 条记录已写入 {features_schema.table_name} 表\n")
+            
+        except Exception as e:
+            error_msg = f"同步指数表失败 - 指数: {','.join(index_codes)}, 时间范围: {start_date}-{end_date}"
+            raise RuntimeError(f"{error_msg}: {str(e)}") from e
     
     def sync_all(self, exchange_market: str = "SSE", start_date: str = "20100101", end_date: str = "20241231"):
         """
