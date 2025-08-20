@@ -164,7 +164,7 @@ class Exchange:
             raise NotImplementedError(f"This type of input is not supported")
 
         if isinstance(codes, str):
-            codes = D.instruments(codes)
+            codes =  D.list_instruments(D.instruments(codes),as_list=True)
         self.codes = codes
         # Necessary fields
         # $close is for calculating the total value at end of each day.
@@ -202,6 +202,7 @@ class Exchange:
         # get stock data from qlib
         if len(self.codes) == 0:
             self.codes = D.instruments()
+
         self.quote_df = D.features(
             self.codes,
             self.all_fields,
