@@ -2,7 +2,7 @@
 * @Author: Hugo
 * @Date: 2024-12-05 10:45:18
  * @LastEditors: shen.lan123@gmail.com
- * @LastEditTime: 2025-08-18 22:13:06
+ * @LastEditTime: 2025-08-20 16:14:22
 * @Description: 查询相关函数
 */
 
@@ -129,108 +129,6 @@ def unionTableColumnNames(dfs){
 };
 
 
-
-/**
- * @brief 拼接两个数据表
- * @param dfs 包含两个内存表的列表
- * @param how 连接类型，可选值为: "full"(全外连接),"left"(左连接),"right"(右连接),"inner"(内连接),"cross"(交叉连接),默认为"full"
- * @return 连接后的表
- */
-def appendDFByCodeAndDate(dfs, how="full"){
-    
-    
-    // 验证连接类型参数
-    validJoinTypes = ["full", "left", "right", "inner", "cross"];
-    if (!(how in validJoinTypes)){
-        throw "连接类型必须是以下之一: full, left, right, inner, cross";
-    }
-    
-    if (size(dfs)==0){
-        throw "dfs为空!";
-    }
-    else if (size(dfs)==1){
-        return dfs[0];
-    }
-    else if (size(dfs)==2){
-
-        dfa = dfs[0];
-        dfb = dfs[1];
-        
-        // 检查每个表是否包含必要的列
-        if (!(("code" in dfa.columnNames()) and ("date" in dfa.columnNames()))){
-            throw "第一个表必须包含code和date列!";
-        };
-        if (!(("code" in dfb.columnNames()) and ("date" in dfb.columnNames()))){
-            throw "第二个表必须包含code和date列!";
-        };
-
-        fields = unionTableColumnNames(dfs);
-
-        // 根据连接类型执行不同的SQL查询
-        if (how == "full"){
-            return <select _$$fields from dfa full join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
-        }
-        else if (how == "left"){
-            return <select _$$fields from dfa left join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
-        }
-        else if (how == "right"){
-            return <select _$$fields from dfa right join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
-        }
-        else if (how == "inner"){
-            return <select _$$fields from dfa join dfb on dfa.date==dfb.date and dfa.code==dfb.code>.eval();
-        }
-        else if (how == "cross"){
-            return <select _$$fields from dfa cross join dfb>.eval();
-        }
-    }
-    else{
-        throw "dfs的长度必须为1或者2!";
-    }
-    
-};
-
-
-/**
- * 合并多个数据框（DataFrame）
- * 
- * 该函数接收一个数据框列表，将它们按照代码和日期合并成一个数据框。
- * 如果输入列表为空，则抛出异常；如果列表只包含一个数据框，则直接返回该数据框。
- * 当列表包含多个数据框时，从第一个开始，依次合并后续的数据框。
- * 
- * @param dfs - 包含多个数据框的列表/数组
- * @return 合并后的数据框
- * @throws 当输入列表为空时抛出异常
- * @note 此函数依赖于 append_df_by_code_and_date 函数来执行两个数据框之间的合并操作
- */
-def appendDFs(dfs, how="full"){
-
-    // 验证连接类型参数
-    validJoinTypes = ["full", "left", "right", "inner", "cross"];
-    if (!(how in validJoinTypes)){
-        throw "连接类型必须是以下之一: full, left, right, inner, cross";
-    };
-
-    if (size(dfs)==0){
-        throw "dfs为空!";
-    };
-    else if (size(dfs)==1){
-        return dfs[0];
-    };
-    // 处理多个表的情况
-    else {
-        // 从第一个表开始，逐步拼接后续的表
-        result = dfs[0];
-        
-        // 从第二个表开始，依次与累积结果进行拼接
-        for (i in 1..(size(dfs)-1)){
-            // 使用已有的 append_df_by_code_and_date 函数进行两表拼接
-            result = appendDFByCodeAndDate([result, dfs[i]],how);
-        };
-
-        return result;
-    };
-};
-
 /*
 * 创建日期映射字典
 * @param x 日期
@@ -306,112 +204,32 @@ def CalcFeatures(tb,featureDict,instruemnts,start_date,end_date){
 };
 
 /**
- * 计算面板特征数据
- *
- * 该函数通过执行一系列表达式来计算金融数据的面板特征，并将结果合并为一个表格。
- * 
- * @param tb 输入数据表名
- * @param expressions 表达式列表，每个表达式为文本格式
- * @param baseFields 基础字段列表，如close、volume、open、high、low等
- * @param instruemnts 证券代码列表
- * @param start_date 开始日期
- * @param end_date 结束日期
- * @return 合并后的特征数据表
- *
- * 函数流程:
- * 1. 从输入表中选取基础字段数据并按日期和证券代码过滤
- * 2. 将基础字段数据转换为面板数据结构(panel)，其中索引为日期，列为证券代码
- * 3. 逐个执行表达式列表中的表达式
- * 4. 将每个表达式的结果转换为表格并合并
+ * @brief 根据基础字段和表结构生成字段表达式列表
+ * @details
+ *   - 遍历基础字段列表 baseFields
+ *   - 如果字段在表结构中存在，则直接添加字段
+ *   - 如果字段不存在，则添加一个值为0的别名列
+ * @param tb 数据表
+ * @param baseFields 需要的基础字段列表
+ * @return 字段表达式列表（包含`date、`code及所有基础字段/别名）
  */
-// def calcPanelFeatures(tb,expressions,baseFields,instruments,start_date,end_date){
-
-
-//     // 添加错误参数检查
-//     if(size(expressions) == 0) {
-//         throw("表达式列表不能为空");
-//     };
-//     if(size(baseFields) == 0) {
-//         throw("基础字段列表不能为空");
-//     };
- 
-//     // 判断expressions是否为dict
-//     if (!isDict(expressions)){
-//         expressionSize = size(expressions);
-//         expressionsDict = dict(expressions,"ExprName"+string(1..expressionSize));
-//     }else{
-//         expressionsDict = expressions;
-//     }
-
-//     // 判断instruments是为dict
-//     // 用以兼容spans
-//     if (isDict(instruments)){
-//         codeRangeFilter = createDateStockMapping(start_date,end_date,instruments);
-//         whereConditions = [expr(sqlCol(`date),between,pair(start_date,end_date)),<conditionalFilter(code,date,codeRangeFilter)>];
-//     }
-//     else{
-//         whereConditions = [expr(sqlCol(`date),between,pair(start_date,end_date)),expr(sqlCol(`code),in,instruments)];
-//     };
-
-//     // 获取计算所需的基础数据
-//     try {
-//         // 基础数据字段
-//         fieldExpr = sqlCol(`date`code).append!(sqlCol(baseFields));
-//         baseData = sql(select=fieldExpr,from=tb,where=whereConditions,orderBy=<date>).eval();
-//         // 检查结果是否为空
-//         if(baseData.rows() == 0) {
-//             print("警告: 基础数据获取失败,请检查表达式引用字段: " + fieldExpr);
-//             return table(100:0, [`date, `code], [DATE, SYMBOL]);
-//         };
-
-//     } catch(ex){
-//         print("错误:表达式中含有未知基础字段.请检查: " + ex);
-//         return table(100:0, [`date, `code], [DATE, SYMBOL]);
-//     };
-    
-
-//     // 生成数据字典
-//     colDatas = [];
-//     for (col in baseFields){
-//         colDatas.append!(baseData[col]);colDatas
-//     };
-//     // 数据字典 k基础字段,v-矩阵index为日期,columns-code
-//     dates = baseData['date'];
-//     codes = baseData['code'];
-//     dataDict = dict(baseFields, panel(dates, codes, colDatas));
-//     // 收集结果
-//     dfs = [];
-
-//     for (expression in expressionsDict.keys()){
-
-//         try{
-//             res = parseExpr(expression,dataDict).eval();
-            
-//             // 检查结果是否为矩阵
-//             if(res.rows()==0){
-//                 print("警告: 计算结果为空，请检查表达式: " + expression);
-//                 continue;
-//             };
-           
-//             dfs.append!(transMatrixToTable(res,expressionsDict[expression]));
-        
-//         } catch(ex){
-//             print("计算表达式失败: " + expression + " 错误信息: " + ex);
-//             placeholder = table(10:0,[`date,`code,expressionsDict[expression]], [DATE, SYMBOL, DOUBLE]);
-//             dfs.append!(placeholder);
-//         };
-     
-//     };
-    
-//     // 检查是否有结果可合并 dfs
-//     if(size(dfs) == 0) {
-//         print("没有成功计算的表达式结果");
-//         return table(100:0, [`date, `code], [DATE, SYMBOL]);
-//     };
-//     // appendDFs(reverse(dfs));
-//     return appendDFs(reverse(dfs));
-// }
-
+def buildFieldExpr(tb, baseFields){
+    // 获取表的所有列名
+    TableColNames = tb.schema()['colDefs']['name'];
+    // 初始化字段表达式，包含`date和`code
+    fieldExpr = sqlCol(`date`code);
+    // 遍历基础字段
+    for (i in baseFields){
+        if (i in TableColNames){
+            // 如果字段存在，直接添加
+            fieldExpr.append!(sqlCol(i));
+        } else {
+            // 如果字段不存在，添加一个值为0的别名列
+            fieldExpr.append!(sqlColAlias(<0>, i));
+        }
+    }
+    return fieldExpr;
+}
 
 
 /**
@@ -465,7 +283,7 @@ def calcPanelFeatures(tb,expressions,baseFields,instruments,start_date,end_date)
     // 获取计算所需的基础数据
     try {
         // 基础数据字段
-        fieldExpr = sqlCol(`date`code).append!(sqlCol(baseFields));
+        fieldExpr = buildFieldExpr(tb,baseFields);
         baseData = sql(select=fieldExpr,from=tb,where=whereConditions,orderBy=<date>).eval();
         // 检查结果是否为空
         if(baseData.rows() == 0) {

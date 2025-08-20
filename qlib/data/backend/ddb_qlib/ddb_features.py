@@ -153,6 +153,31 @@ def normalize_fields_to_ddb(
 
     return normalized_expr, base_fields, is_pure_fields
 
+def build_field_expr(
+    session: ddb.Session, db_name: str, table_name: str, base_fields: List[str]
+) -> List[str]:
+    """
+    构建字段表达式列表，用于查询表时确保所有基础字段都被包含。
+
+    如果基础字段在表的列中存在，则直接返回字段名；
+    如果不存在，则返回 "0 as 字段名" 以保证查询结果中包含该字段，值为0。
+
+    :param session: DolphinDB会话对象，用于加载数据表。
+    :type session: Session
+    :param db_name: 数据库名称。
+    :type db_name: str
+    :param table_name: 表名称。
+    :type table_name: str
+    :param base_fields: 需要查询的基础字段列表。
+    :type base_fields: List[str]
+    :return: 字段表达式列表，每个元素为字段名或"0 as 字段名"的表达式。
+    :rtype: List[str]
+    """
+    tb = session.loadTable(table_name, f"dfs://{db_name}")
+    table_columns: List[str] = tb.schema["name"].tolist()
+
+    return [col if col in table_columns else f"0 as {col}" for col in base_fields]
+
 # ddb_features使用
 def fetch_features_from_ddb(
     session: ddb.Session,
@@ -230,7 +255,8 @@ def fetch_features_from_ddb(
 
     # 判断是否为纯字段表达式（如$close, $open），如果是则直接查询表
     if is_pure_fields:
-     
+        # 基础字段如果缺失则使用0填充
+        base_fields: List[str] = build_field_expr(session, db_name, table_name, base_fields)
         # 创建基础查询语句部分
         base_query = (
             session.loadTable(table_name, f"dfs://{db_name}")
