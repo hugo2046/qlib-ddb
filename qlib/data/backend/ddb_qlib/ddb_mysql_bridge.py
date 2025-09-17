@@ -85,7 +85,6 @@ class DDBMySQLBridge:
             params.append(f"'{uri['database']}'")
         
         self.connector_expr = f"mysql::connect({', '.join(params)})"
-
         # NOTE:此时mysql_conn被创建,该mysql连接仅存在于当前节点中
         # 需要dolphinDB有MySQL插件,如果没有，运行load_mysql_plugin方法先行安装
         self.ddb_session.run(
@@ -322,7 +321,7 @@ class QlibDDBMySQLInitializer:
         :param exchange_market: 交易所市场，默认为"SSE"
         :type exchange_market: str
         """
-        where_clause = f'S_INFO_EXCHMARKET="{exchange_market}"'
+        where_clause = f"S_INFO_EXCHMARKET='{exchange_market}'"
         self._sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", where_clause)
     
     def sync_feature_daily(self, start_date: str = "20100101", end_date: str = "20241231"):
@@ -428,6 +427,7 @@ class QlibDDBMySQLInitializer:
             self.sync_instrument()
             self.sync_calendar(exchange_market)
             self.sync_feature_daily(start_date, end_date)
+            self.sync_index_daily(['000300.SH', '000905.SH'], start_date, end_date)
         except Exception as e:
             raise RuntimeError(f"同步所有表失败: {str(e)}") from e
     
@@ -441,7 +441,7 @@ class QlibDDBMySQLInitializer:
             self._bridge = None
 
 
-def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
+def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str,start_date:str="20100101", end_date:str="20241231") -> None:
     """
     从MySQL初始化QLib所需的DolphinDB数据库。
 
@@ -458,7 +458,7 @@ def init_qlib_ddb_from_mysql(ddb_uri: str, mysql_uri: str) -> None:
         此函数为向后兼容性保留，建议使用QlibDDBMySQLInitializer类。
     """
     with QlibDDBMySQLInitializer(ddb_uri, mysql_uri) as initializer:
-        initializer.sync_all()
+        initializer.sync_all(start_date=start_date, end_date=end_date)
 
 
 
