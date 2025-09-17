@@ -7,7 +7,7 @@ from pathlib import Path
 import warnings
 import pandas as pd
 
-from typing import Tuple, Union, List, Dict
+from typing import Tuple, Union, List, Dict, Optional
 
 from qlib.data import D
 from qlib.utils import load_dataset, init_instance_by_config, time_to_slc_point
@@ -88,7 +88,10 @@ class DLWParser(DataLoader):
         self.is_group = isinstance(config, dict)
 
         if self.is_group:
-            self.fields = {grp: self._parse_fields_info(fields_info) for grp, fields_info in config.items()}
+            self.fields = {
+                grp: self._parse_fields_info(fields_info)
+                for grp, fields_info in config.items()
+            }
         else:
             self.fields = self._parse_fields_info(config)
 
@@ -139,7 +142,9 @@ class DLWParser(DataLoader):
         if self.is_group:
             df = pd.concat(
                 {
-                    grp: self.load_group_df(instruments, exprs, names, start_time, end_time, grp)
+                    grp: self.load_group_df(
+                        instruments, exprs, names, start_time, end_time, grp
+                    )
                     for grp, (exprs, names) in self.fields.items()
                 },
                 axis=1,
@@ -190,7 +195,7 @@ class QlibDataLoader(DLWParser):
         super().__init__(config)
 
         if self.is_group:
-            # check sample config  
+            # check sample config
             if isinstance(freq, dict):
                 for _gp in config.keys():
                     if _gp not in freq:
@@ -214,19 +219,32 @@ class QlibDataLoader(DLWParser):
         if isinstance(instruments, str):
             instruments = D.instruments(instruments, filter_pipe=self.filter_pipe)
         elif self.filter_pipe is not None:
-            warnings.warn("`filter_pipe` is not None, but it will not be used with `instruments` as list")
+            warnings.warn(
+                "`filter_pipe` is not None, but it will not be used with `instruments` as list"
+            )
 
         freq = self.freq[gp_name] if isinstance(self.freq, dict) else self.freq
         inst_processors = (
-            self.inst_processors if isinstance(self.inst_processors, list) else self.inst_processors.get(gp_name, [])
+            self.inst_processors
+            if isinstance(self.inst_processors, list)
+            else self.inst_processors.get(gp_name, [])
         )
-        
-        df:pd.DataFrame = D.features(instruments, exprs, start_time, end_time, freq=freq, inst_processors=inst_processors)
-   
+
+        df: pd.DataFrame = D.features(
+            instruments,
+            exprs,
+            start_time,
+            end_time,
+            freq=freq,
+            inst_processors=inst_processors,
+        )
+
         df.columns = names
-        
+
         if self.swap_level:
-            df = df.swaplevel().sort_index()  # NOTE: if swaplevel, return <datetime, instrument>
+            df = (
+                df.swaplevel().sort_index()
+            )  # NOTE: if swaplevel, return <datetime, instrument>
         return df
 
 
@@ -276,7 +294,10 @@ class StaticDataLoader(DataLoader, Serializable):
             return
         if isinstance(self._config, dict):
             self._data = pd.concat(
-                {fields_group: load_dataset(path_or_obj) for fields_group, path_or_obj in self._config.items()},
+                {
+                    fields_group: load_dataset(path_or_obj)
+                    for fields_group, path_or_obj in self._config.items()
+                },
                 axis=1,
                 join=self.join,
             )
@@ -286,6 +307,738 @@ class StaticDataLoader(DataLoader, Serializable):
                 self._data = pickle.load(f)
         elif isinstance(self._config, pd.DataFrame):
             self._data = self._config
+
+
+class SQLDataLoader(DataLoader):
+    """
+    Abstract base class for SQL-based data loaders.
+
+    This class provides common functionality for data loaders that work with SQL databases,
+    including query building, filtering, and data transformation capabilities.
+    """
+
+    def __init__(self, table_name: str, config: Optional[Dict] = None):
+        """
+        Initialize SQL data loader base class.
+
+        Parameters
+        ----------
+        table_name : str
+            Table name in the database
+        config : Optional[Dict], default None
+            Configuration dictionary for data loading behavior
+        """
+        self.table_name = table_name
+        self._config = config or {}
+
+    def _extract_config_parameters(self):
+        """Extract configuration parameters with defaults."""
+        config = self._config
+        return {
+            "fields": config.get("fields"),
+            "datetime_col": config.get("datetime_colName"),
+            "instruments_col": config.get("instruments_colName"),
+            "pivot": config.get("pivot", False),
+            "pivot_columns": config.get("columns"),
+            "pivot_values": config.get("values"),
+            "datetime_format": config.get("datetime_format"),
+        }
+
+    def _build_select_clause(
+        self, fields, datetime_col, instruments_col, pivot=False, pivot_columns=None
+    ) -> str:
+        """Build SELECT clause for SQL query."""
+        select_parts = []
+
+        if datetime_col:
+            select_parts.append(datetime_col)
+        if instruments_col:
+            select_parts.append(instruments_col)
+
+        # 在透视模式下，需要选择透视列和值列，而不是具体的字段
+        if pivot and pivot_columns:
+            # 透视模式下，添加透视列（如 factor_name）
+            if pivot_columns not in select_parts:
+                select_parts.append(pivot_columns)
+        else:
+            # 非透视模式下，添加指定的字段
+            if fields:
+                if isinstance(fields, list):
+                    select_parts.extend(fields)
+                else:
+                    select_parts.append(fields)
+
+        return ",".join(select_parts)
+
+    def _build_select_list(
+        self, fields, datetime_col, instruments_col, pivot=False, pivot_columns=None
+    ) -> List[str]:
+        """Build select list for query (returns list instead of comma-separated string)."""
+        select_list = []
+
+        if datetime_col:
+            select_list.append(datetime_col)
+        if instruments_col:
+            select_list.append(instruments_col)
+
+        # 在透视模式下，需要选择透视列和值列，而不是具体的字段
+        if pivot and pivot_columns:
+            # 透视模式下，添加透视列（如 factor_name）
+            if pivot_columns not in select_list:
+                select_list.append(pivot_columns)
+        else:
+            # 非透视模式下，添加指定的字段
+            if fields:
+                if isinstance(fields, list):
+                    select_list.extend(fields)
+                else:
+                    select_list.append(fields)
+
+        return select_list
+
+    def _build_where_clause(
+        self,
+        instruments,
+        start_time,
+        end_time,
+        datetime_col,
+        instruments_col,
+        datetime_format,
+        mysql_format=True,
+        fields=None,
+        pivot=False,
+        pivot_columns=None,
+    ) -> str:
+        """Build WHERE clause for filtering."""
+        conditions = []
+
+        # Add time filter
+        if start_time and end_time:
+            time_condition = self._build_time_filter(
+                start_time, end_time, datetime_col, datetime_format, mysql_format
+            )
+            if time_condition:
+                conditions.append(time_condition)
+
+        # Add instruments filter
+        if instruments:
+            instruments_condition = self._build_instruments_filter(
+                instruments, instruments_col, mysql_format
+            )
+            if instruments_condition:
+                conditions.append(instruments_condition)
+
+        # 在透视模式下，添加字段筛选条件
+        if pivot and fields and pivot_columns:
+            fields_condition = self._build_pivot_fields_filter(
+                fields, pivot_columns, mysql_format
+            )
+            if fields_condition:
+                conditions.append(fields_condition)
+
+        return " AND ".join(conditions)
+
+    def _build_time_filter(
+        self, start_time, end_time, datetime_col, datetime_format, mysql_format=True
+    ) -> str:
+        """Build time filtering condition."""
+        if not datetime_col:
+            return ""
+
+        # Set default datetime format based on backend
+        if datetime_format is None:
+            datetime_format = "%Y-%m-%d" if mysql_format else "%Y.%m.%d"
+
+        # Convert times to strings
+        start_str = pd.to_datetime(start_time).strftime(datetime_format)
+        end_str = pd.to_datetime(end_time).strftime(datetime_format)
+
+        # Generate appropriate filter syntax
+        if mysql_format:
+            return f"{datetime_col} BETWEEN '{start_str}' AND '{end_str}'"
+        else:
+            return f"{datetime_col} between pair({start_str},{end_str})"
+
+    def _build_instruments_filter(
+        self, instruments, instruments_col, mysql_format=True
+    ) -> str:
+        """Build instruments filtering condition."""
+        if not instruments_col:
+            return ""
+
+        if isinstance(instruments, str):
+            # Single instrument
+            quoted_inst = repr(instruments) if mysql_format else instruments
+            return f"{instruments_col} = {quoted_inst}"
+        elif isinstance(instruments, (list, tuple)):
+            # Multiple instruments
+            if mysql_format:
+                quoted_instruments = [repr(str(inst)) for inst in instruments]
+                instruments_list = ", ".join(quoted_instruments)
+            else:
+                instruments_list = ", ".join([repr(str(inst)) for inst in instruments])
+            return f"{instruments_col} in ({instruments_list})"
+
+        return ""
+
+    def _build_pivot_fields_filter(
+        self, fields, pivot_columns, mysql_format=True
+    ) -> str:
+        """Build fields filtering condition for pivot mode."""
+        if not fields or not pivot_columns:
+            return ""
+
+        if isinstance(fields, str):
+            # Single field
+            quoted_field = repr(fields) if mysql_format else fields
+            return f"{pivot_columns} = {quoted_field}"
+        elif isinstance(fields, (list, tuple)):
+            # Multiple fields
+            if mysql_format:
+                quoted_fields = [repr(str(field)) for field in fields]
+                fields_list = ", ".join(quoted_fields)
+            else:
+                fields_list = ", ".join([repr(str(field)) for field in fields])
+            return f"{pivot_columns} in ({fields_list})"
+
+        return ""
+
+    def _apply_pivot_transformation(
+        self, df, datetime_col, instruments_col, pivot_columns, pivot_values
+    ) -> pd.DataFrame:
+        """Apply pivot table transformation to the data."""
+        try:
+            index_cols = [
+                col
+                for col in [datetime_col, instruments_col]
+                if col and col in df.columns
+            ]
+            # NOTE:ddb查询返回的date格式为datetime64[s]这里保持一致
+            df[datetime_col] = pd.to_datetime(df[datetime_col]).astype("datetime64[s]")
+            return pd.pivot_table(
+                df, index=index_cols, columns=pivot_columns, values=pivot_values
+            )
+        except Exception as e:
+            warnings.warn(f"Pivot transformation failed: {e}. Returning original data.")
+            return df
+
+    def _finalize_dataframe(
+        self, df, datetime_col, instruments_col, pivot, pivot_columns, pivot_values
+    )->pd.DataFrame:
+        """Apply final transformations to the dataframe."""
+        
+        if pivot and pivot_columns and pivot_values:
+            df:pd.DataFrame = self._apply_pivot_transformation(
+                df, datetime_col, instruments_col, pivot_columns, pivot_values
+            )
+        else:
+            df[datetime_col] = pd.to_datetime(df[datetime_col]).astype("datetime64[s]")
+            df:pd.DataFrame = df.set_index([datetime_col, instruments_col])
+        return df
+
+    def _ensure_pivot_values_column(self, select_clause, pivot_values):
+        """Ensure pivot values column is included in SELECT clause."""
+        if pivot_values and pivot_values not in select_clause:
+            return f"{select_clause},{pivot_values}"
+        return select_clause
+
+
+class MySQLDataLoader(SQLDataLoader):
+
+    def __init__(
+        self,
+        table_name: str,
+        db_name: Optional[str] = None,
+        connect: Optional[str] = None,
+        config: Optional[Dict] = None,
+    ) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        
+        super().__init__(table_name, config)
+
+        if not connect.endswith("/"):
+            connect += "/"
+
+        full_connect = connect + db_name
+        self.connect = full_connect
+        self.engine = create_engine(
+            self.connect,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            pool_reset_on_return="commit",
+        )
+        self._sql = None
+        self.Session = sessionmaker(bind=self.engine)
+        
+    def query(self, sql: str) -> pd.DataFrame:
+    
+        return pd.read_sql(sql, self.engine)
+            
+    def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
+        # Extract configuration parameters
+        params = self._extract_config_parameters()
+
+        # Build SQL components
+        select_fields = self._build_select_clause(
+            params["fields"],
+            params["datetime_col"],
+            params["instruments_col"],
+            params["pivot"],
+            params["pivot_columns"],
+        )
+
+        # 在透视模式下，确保包含值列
+        if params["pivot"] and params["pivot_values"]:
+            select_fields = self._ensure_pivot_values_column(
+                select_fields, params["pivot_values"]
+            )
+
+        where_clause = self._build_where_clause(
+            instruments,
+            start_time,
+            end_time,
+            params["datetime_col"],
+            params["instruments_col"],
+            params["datetime_format"],
+            mysql_format=True,
+            fields=params["fields"],
+            pivot=params["pivot"],
+            pivot_columns=params["pivot_columns"],
+        )
+
+        # Construct SQL query
+        sql = f"SELECT {select_fields} FROM {self.table_name}"
+        if where_clause:
+            sql += f" WHERE {where_clause}"
+        self._sql = sql
+      
+        df = pd.read_sql(sql, self.engine)
+
+
+        # Apply final transformations
+        return self._finalize_dataframe(
+            df,
+            params["datetime_col"],
+            params["instruments_col"],
+            params["pivot"],
+            params["pivot_columns"],
+            params["pivot_values"],
+        )
+
+
+class DolphinDBDataLoader(SQLDataLoader):
+    """
+    DolphinDB data loader that supports loading data from DolphinDB or via MySQL Bridge.
+
+    This loader provides compatibility with qlib's standard data loading interface while
+    supporting advanced DolphinDB-specific features.
+
+    Features:
+    - Standard qlib DataLoader interface compatibility
+    - Flexible SQL query parameters for raw data access
+    - Optional MySQL Bridge mode for SQL compatibility
+    - Automatic table existence validation
+    - Connection reuse and error handling
+    - Configurable data transformation (pivot, column mapping)
+    """
+
+    def __init__(
+        self,
+        table_name: str,
+        db_name: Optional[str] = None,
+        validate_table: bool = True,
+        config: Optional[Dict] = None,
+    ):
+        """
+        Initialize DolphinDB data loader.
+
+        Parameters
+        ----------
+        table_name : str
+            Table name in the database
+        db_name : Optional[str], default None
+            Database name, defaults to "QlibFeaturesDay"
+        validate_table : bool, default True
+            Whether to validate table existence on initialization
+        config : Optional[Dict], default None
+            Configuration dictionary for data loading behavior:
+            - fields: str or List[str] - Field names to select
+            - datetime_colName: str - Name of datetime column
+            - instruments_colName: str - Name of instruments column
+            - pivot: bool - Whether to pivot the result
+            - columns: str or List[str] - Columns for pivot table
+            - values: str or List[str] - Values for pivot table
+            - datetime_format: str - Format string for datetime conversion
+
+        Raises
+        ------
+        ImportError
+            When DolphinDB is not available
+        ValueError
+            When parameters are invalid
+        RuntimeError
+            When table doesn't exist or connection fails
+        """
+        # Import dependencies with lazy loading to avoid circular imports
+        from ..data import DBClient, is_using_dolphindb, C
+
+        # Validate DolphinDB availability
+        if not is_using_dolphindb():
+            raise ImportError(
+                "DolphinDB is not available. Please install dolphindb package "
+                "and ensure proper configuration."
+            )
+
+        # Initialize base class
+        super().__init__(table_name, config)
+
+        # Set DolphinDB-specific parameters
+        self.db_name = (db_name or "QlibFeaturesDay").strip()
+        self.validate_table = validate_table
+
+        # Validate parameters
+        if not self.db_name:
+            raise ValueError("db_name cannot be empty")
+
+        # Initialize connections and state
+        self.session = DBClient.session
+        self._table_validated = False
+        self._mysql_bridge = None  # DolphinDB mode only
+
+        if validate_table:
+            self._validate_table_exists()
+
+    def _validate_table_exists(self) -> None:
+        """Validate table existence in the database."""
+        if self._table_validated:
+            return
+
+        try:
+            table_path = f"dfs://{self.db_name}"
+            if not self.session.existsTable(table_path, self.table_name):
+                raise ValueError(
+                    f"Table '{self.table_name}' does not exist in database '{self.db_name}'. "
+                    f"Please check table name and database configuration."
+                )
+            self._table_validated = True
+        except Exception as e:
+            if "does not exist" in str(e):
+                raise ValueError(str(e))
+            raise RuntimeError(f"Failed to validate table existence: {e}")
+
+    def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
+        """
+        Load data with qlib compatibility interface.
+
+        This method provides compatibility with qlib's standard DataLoader interface,
+        allowing seamless integration with existing qlib workflows.
+
+        Parameters
+        ----------
+        instruments : str, list, or None, default None
+            Instrument codes to filter. If None, loads all instruments.
+            Can be a single instrument string or list of instruments.
+        start_time : str, pd.Timestamp, or None, default None
+            Start time for data filtering. Various formats supported.
+        end_time : str, pd.Timestamp, or None, default None
+            End time for data filtering. Various formats supported.
+
+        Returns
+        -------
+        pd.DataFrame
+            Loaded data with proper index structure for qlib compatibility.
+
+        Notes
+        -----
+        This method uses configuration from self._config to determine:
+        - Field selection and column mapping
+        - Date/time formatting and filtering
+        - Whether to apply pivot transformation
+        - Instrument filtering logic
+        """
+        # Extract configuration parameters
+        params = self._extract_config_parameters()
+
+        df = self._load_via_dolphindb(
+            instruments,
+            start_time,
+            end_time,
+            params["fields"],
+            params["datetime_col"],
+            params["instruments_col"],
+            params["datetime_format"],
+            params["pivot"],
+            params["pivot_columns"],
+            params["pivot_values"],
+        )
+
+        # Apply final transformations
+        return self._finalize_dataframe(
+            df,
+            params["datetime_col"],
+            params["instruments_col"],
+            params["pivot"],
+            params["pivot_columns"],
+            params["pivot_values"],
+        )
+
+    def _load_via_dolphindb(
+        self,
+        instruments,
+        start_time,
+        end_time,
+        fields,
+        datetime_col,
+        instruments_col,
+        datetime_format,
+        pivot=False,
+        pivot_columns=None,
+        pivot_values=None,
+    ) -> pd.DataFrame:
+        """Load data directly from DolphinDB."""
+        # Load table and build query
+        tb = self.session.loadTable(
+            dbPath=f"dfs://{self.db_name}", tableName=self.table_name
+        )
+
+        # Build select clause
+        select_fields = self._build_select_list(
+            fields, datetime_col, instruments_col, pivot, pivot_columns
+        )
+
+        # 在透视模式下，确保包含值列
+        if pivot and pivot_values and pivot_values not in select_fields:
+            select_fields.append(pivot_values)
+
+        query = tb.select(select_fields)
+
+        # Apply time filtering
+        if start_time and end_time:
+            time_filter = self._build_time_filter(
+                start_time, end_time, datetime_col, datetime_format, mysql_format=False
+            )
+            query = query.where(time_filter)
+
+        # Apply instrument filtering
+        if instruments:
+            instruments_filter = self._build_instruments_filter(
+                instruments, instruments_col, mysql_format=False
+            )
+            query = query.where(instruments_filter)
+
+        # 在透视模式下，添加字段筛选条件
+        if pivot and fields and pivot_columns:
+            fields_filter = self._build_pivot_fields_filter(
+                fields, pivot_columns, mysql_format=False
+            )
+            query = query.where(fields_filter)
+
+        return query.toDF()
+
+    def query_raw_data(
+        self,
+        select: Union[str, List[str]],
+        where: Optional[Union[str, List[str]]] = None,
+        groupBy: Optional[Union[str, List[str]]] = None,
+        csort: Optional[Union[str, List[str]]] = None,
+        having: Optional[Union[str, List[str]]] = None,
+        orderBy: Optional[Union[str, List[str]]] = None,
+        groupFlag: int = 1,
+        ascSort: Union[int, List[int]] = 1,
+        ascOrder: Union[int, List[int]] = 1,
+        limit: Optional[Union[int, Tuple[int, int]]] = None,
+        exec: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Query raw data with DolphinDB SQL-like syntax.
+
+        This method provides direct SQL-like data access for advanced users
+        who need custom queries without configuration constraints.
+
+        Parameters
+        ----------
+        select : str or List[str]
+            Column names or expressions to select
+        where : str, List[str], or None, default None
+            WHERE conditions for filtering
+        groupBy : str, List[str], or None, default None
+            GROUP BY columns for aggregation
+        csort : str, List[str], or None, default None
+            CONTEXT BY sort columns (only valid when groupFlag=0)
+        having : str, List[str], or None, default None
+            HAVING conditions for group filtering
+        orderBy : str, List[str], or None, default None
+            ORDER BY columns for result sorting
+        groupFlag : int, default 1
+            Grouping mode: 1=GROUP BY, 0=CONTEXT BY, 2=PIVOT BY
+        ascSort : int or List[int], default 1
+            CSORT ascending flags: 1=ascending, 0=descending
+        ascOrder : int or List[int], default 1
+            ORDER BY ascending flags: 1=ascending, 0=descending
+        limit : int, tuple, or None, default None
+            Limit number of returned rows
+        exec : bool, default False
+            Whether to use EXEC clause
+
+        Returns
+        -------
+        pd.DataFrame
+            Query results
+
+        Raises
+        ------
+        ValueError
+            When parameters are invalid
+        RuntimeError
+            When query execution fails
+        """
+        # Parameter validation
+        if not select:
+            raise ValueError("'select' parameter cannot be empty")
+
+        # Validate groupFlag
+        if groupFlag not in [0, 1, 2]:
+            raise ValueError(
+                "groupFlag must be 0 (CONTEXT BY), 1 (GROUP BY), or 2 (PIVOT BY)"
+            )
+
+        # Validate csort usage
+        if csort is not None and groupFlag != 0:
+            raise ValueError(
+                "'csort' parameter is only valid when groupFlag=0 (CONTEXT BY)"
+            )
+
+        try:
+            if self._mysql_bridge is None:
+                return self._load_from_dolphindb(
+                    select,
+                    where,
+                    groupBy,
+                    csort,
+                    having,
+                    orderBy,
+                    groupFlag,
+                    ascSort,
+                    ascOrder,
+                    limit,
+                    exec,
+                )
+            else:
+                return self._load_from_mysql_bridge(select, where, groupBy, having)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load data: {e}")
+
+    def _load_from_dolphindb(
+        self,
+        select,
+        where,
+        groupBy,
+        csort,
+        having,
+        orderBy,
+        groupFlag,
+        ascSort,
+        ascOrder,
+        limit,
+        exec,
+    ) -> pd.DataFrame:
+        """Load data directly from DolphinDB."""
+        try:
+            from ..backend.ddb_qlib.ddb_features import construct_ddb_sql_eval
+        except ImportError:
+            raise ImportError("DolphinDB features module not available")
+
+        # Ensure table is validated
+        if self.validate_table and not self._table_validated:
+            self._validate_table_exists()
+
+        # Build query expression
+        expr = construct_ddb_sql_eval(
+            db_name=self.db_name,
+            table_name=self.table_name,
+            select=select,
+            where=where,
+            groupBy=groupBy,
+            csort=csort,
+            having=having,
+            orderBy=orderBy,
+            groupFlag=groupFlag,
+            ascSort=ascSort,
+            ascOrder=ascOrder,
+            limit=limit,
+            exec=exec,
+        )
+
+        # Execute query
+        result = self.session.run(expr)
+
+        # Ensure DataFrame return
+        if not isinstance(result, pd.DataFrame):
+            if hasattr(result, "toDF"):
+                result = result.toDF()
+            else:
+                result = pd.DataFrame(result)
+
+        return result
+
+    def get_table_info(self) -> Dict:
+        """
+        Get table information and metadata.
+
+        Returns
+        -------
+        Dict
+            Basic table information including connection mode and status
+        """
+        if self._mysql_bridge is not None:
+            return {"mode": "mysql_bridge", "connection": self.connect}
+
+        try:
+            info = {
+                "mode": "dolphindb",
+                "db_name": self.db_name,
+                "table_name": self.table_name,
+                "table_exists": False,
+            }
+
+            if self.session.existsTable(f"dfs://{self.db_name}", self.table_name):
+                info["table_exists"] = True
+                # Could add more table info like row count, column info, etc.
+
+            return info
+        except Exception as e:
+            return {"mode": "dolphindb", "error": str(e)}
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with proper resource cleanup."""
+        try:
+            if self.session:
+                self.session.close()
+        except Exception as e:
+            warnings.warn(f"Error closing DolphinDB session: {e}")
+        return False
+
+    def __del__(self):
+        """Destructor for cleanup."""
+        try:
+            if hasattr(self, "session") and self.session:
+                self.session.close()
+        except Exception:
+            pass  # Ignore cleanup errors in destructor
+
+    def __repr__(self) -> str:
+        """Return string representation of the object."""
+        mode = "MySQL Bridge" if self._mysql_bridge else "DolphinDB"
+        return (
+            f"DolphinDBDataLoader(table='{self.table_name}', "
+            f"db='{self.db_name}', mode='{mode}')"
+        )
 
 
 class NestedDataLoader(DataLoader):
@@ -322,7 +1075,8 @@ class NestedDataLoader(DataLoader):
         """
         super().__init__()
         self.data_loader_l = [
-            (dl if isinstance(dl, DataLoader) else init_instance_by_config(dl)) for dl in dataloader_l
+            (dl if isinstance(dl, DataLoader) else init_instance_by_config(dl))
+            for dl in dataloader_l
         ]
         self.join = join
 
@@ -335,11 +1089,19 @@ class NestedDataLoader(DataLoader):
                 warnings.warn(
                     "If the value of `instruments` cannot be processed, it will set instruments to None to get all the data."
                 )
-                df_current = dl.load(instruments=None, start_time=start_time, end_time=end_time)
+                df_current = dl.load(
+                    instruments=None, start_time=start_time, end_time=end_time
+                )
             if df_full is None:
                 df_full = df_current
             else:
-                df_full = pd.merge(df_full, df_current, left_index=True, right_index=True, how=self.join)
+                df_full = pd.merge(
+                    df_full,
+                    df_current,
+                    left_index=True,
+                    right_index=True,
+                    how=self.join,
+                )
         return df_full.sort_index(axis=1)
 
 
@@ -384,10 +1146,13 @@ class DataLoaderDH(DataLoader):
 
         if is_group:
             self.handlers = {
-                grp: init_instance_by_config(config, accept_types=DataHandler) for grp, config in handler_config.items()
+                grp: init_instance_by_config(config, accept_types=DataHandler)
+                for grp, config in handler_config.items()
             }
         else:
-            self.handlers = init_instance_by_config(handler_config, accept_types=DataHandler)
+            self.handlers = init_instance_by_config(
+                handler_config, accept_types=DataHandler
+            )
 
         self.is_group = is_group
         self.fetch_kwargs = {"col_set": DataHandler.CS_RAW}
@@ -395,16 +1160,26 @@ class DataLoaderDH(DataLoader):
 
     def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
         if instruments is not None:
-            get_module_logger(self.__class__.__name__).warning(f"instruments[{instruments}] is ignored")
+            get_module_logger(self.__class__.__name__).warning(
+                f"instruments[{instruments}] is ignored"
+            )
 
         if self.is_group:
             df = pd.concat(
                 {
-                    grp: dh.fetch(selector=slice(start_time, end_time), level="datetime", **self.fetch_kwargs)
+                    grp: dh.fetch(
+                        selector=slice(start_time, end_time),
+                        level="datetime",
+                        **self.fetch_kwargs,
+                    )
                     for grp, dh in self.handlers.items()
                 },
                 axis=1,
             )
         else:
-            df = self.handlers.fetch(selector=slice(start_time, end_time), level="datetime", **self.fetch_kwargs)
+            df = self.handlers.fetch(
+                selector=slice(start_time, end_time),
+                level="datetime",
+                **self.fetch_kwargs,
+            )
         return df
