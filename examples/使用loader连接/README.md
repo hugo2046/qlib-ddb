@@ -407,7 +407,7 @@ qlib.init(database_uri=uri, region=REG_CN)
     [3945290:MainThread](2025-09-24 11:47:06,878) INFO - qlib.Initialization - [config.py:438] - default_conf: client.
     [3945290:MainThread](2025-09-24 11:47:07,452) INFO - qlib.ddb_features - [ddb_features.py:90] - 已注册 qlib 兼容函数到 DolphinDB 会话
     [3945290:MainThread](2025-09-24 11:47:07,454) INFO - qlib.Initialization - [__init__.py:86] - qlib successfully initialized based on client settings.
-    [3945290:MainThread](2025-09-24 11:47:07,455) INFO - qlib.Initialization - [__init__.py:96] - data_path={'__DEFAULT_FREQ': 'DolphinDB(dolphindb://admin:123456@114.80.110.170:28848)'}
+    [3945290:MainThread](2025-09-24 11:47:07,455) INFO - qlib.Initialization - [__init__.py:96] - data_path={'__DEFAULT_FREQ': 'DolphinDB(dolphindb://admin:123456@locahost:8848)'}
 
 
 
