@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple, Union
 import dolphindb as ddb
 import numpy as np
 import pandas as pd
+from packaging import version
 
 from ....log import get_module_logger
 from ....utils import normalize_cache_fields
@@ -140,8 +141,8 @@ def normalize_fields_to_ddb(
     pattern = re.compile(r"\$([a-zA-Z_][a-zA-Z0-9_]*)")
     base_fields: List[str] = []
     # 过滤掉 code 和 date 字段
-    excluded_fields = {'code', 'date'}
-    
+    excluded_fields = {"code", "date"}
+
     for expr in exprs.keys():  # exprs 已按输入顺序构建
         for fld in pattern.findall(expr):
             if fld not in base_fields and fld not in excluded_fields:
@@ -152,6 +153,7 @@ def normalize_fields_to_ddb(
     is_pure_fields: bool = all(bool(pure_pattern.match(e)) for e in fields_od.keys())
 
     return normalized_expr, base_fields, is_pure_fields
+
 
 def build_field_expr(
     session: ddb.Session, db_name: str, table_name: str, base_fields: List[str]
@@ -177,6 +179,7 @@ def build_field_expr(
     table_columns: List[str] = tb.schema["name"].tolist()
 
     return [col if col in table_columns else f"0 as {col}" for col in base_fields]
+
 
 # ddb_features使用
 def fetch_features_from_ddb(
@@ -215,7 +218,7 @@ def fetch_features_from_ddb(
         包含查询结果的数据框，以 ["instrument", "datetime"] 为索引
     """
     from .schemas import QlibTableSchema
-   
+
     normalized_expr, base_fields, is_pure_fields = normalize_fields_to_ddb(fields)
     reversed_expr: Dict = {v: k for k, v in normalized_expr.items()}
 
@@ -256,14 +259,16 @@ def fetch_features_from_ddb(
     # 判断是否为纯字段表达式（如$close, $open），如果是则直接查询表
     if is_pure_fields:
         # 基础字段如果缺失则使用0填充
-        base_fields: List[str] = build_field_expr(session, db_name, table_name, base_fields)
+        base_fields: List[str] = build_field_expr(
+            session, db_name, table_name, base_fields
+        )
         # 创建基础查询语句部分
         base_query = (
             session.loadTable(table_name, f"dfs://{db_name}")
             .select(["code", "date"] + base_fields)
             .where(f"date between pair({start_time},{end_time})")
         )
-      
+
         # 根据instruments类型选择不同的查询方式
         if isinstance(instruments, list):
             # 如果是列表，直接使用in条件过滤
@@ -284,7 +289,7 @@ def fetch_features_from_ddb(
                 .sort(["date", "code"])
                 .toDF()
             )
-         
+
     else:
 
         # 使用mr防止因子计算时OOM
@@ -292,14 +297,17 @@ def fetch_features_from_ddb(
         FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,"{db_name}","{table_name}")
         """
         # data: pd.DataFrame = session.run(ddb_expr)
-        data:Dict[str,List] = session.run(ddb_expr)
+        data: Dict[str, List] = session.run(ddb_expr)
         try:
-            data:Dict[str,pd.DataFrame] = {k:pd.DataFrame(data=v[0],index=v[1],columns=v[2]) for k, v in data.items()}
+            data: Dict[str, pd.DataFrame] = {
+                k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
+                for k, v in data.items()
+            }
         except IndexError as e:
             # 可能是data为空
             raise IndexError(f"传入的data数据为空: {e}")
-        data:pd.DataFrame = pd.concat(data)
-        
+        data: pd.DataFrame = pd.concat(data)
+
     if not isinstance(data, pd.DataFrame):
         raise ValueError("查询结果不是 DataFrame 格式")
 
@@ -307,7 +315,21 @@ def fetch_features_from_ddb(
     if not data.empty:
         try:
             if isinstance(data.index, pd.MultiIndex):
-                data:pd.DataFrame = data.unstack(level=0).stack(level=0, future_stack=True).swaplevel(0, 1)
+                # 根据 pandas 版本决定 stack 的参数
+                if version.parse(pd.__version__) < version.parse("1.5.0"):
+                    # 旧版本 pandas 不支持 future_stack，但支持 dropna=False
+                    data: pd.DataFrame = (
+                        data.unstack(level=0)
+                        .stack(level=0, dropna=False)
+                        .swaplevel(0, 1)
+                    )
+                else:
+                    # 新版本 pandas 使用 future_stack 或依赖默认行为
+                    data: pd.DataFrame = (
+                        data.unstack(level=0)
+                        .stack(level=0, future_stack=True)
+                        .swaplevel(0, 1)
+                    )
             else:
                 data: pd.DataFrame = data.set_index(["code", "date"])
         except KeyError:
@@ -329,7 +351,7 @@ def fetch_features_from_ddb(
     except Exception as e:
         # 出错则保持原始列顺序
         raise e
-    
+
     # 最后再重命名 alias -> 输出列名
     data = data.rename(columns=reversed_expr)
 
@@ -503,6 +525,126 @@ class TradeDateUtils:
             raise ValueError(f"开始日期 {start_dt} 不能晚于结束日期 {end_dt}")
 
         return start_dt, end_dt
+
+
+def construct_ddb_sql_eval(
+    db_name: str,
+    table_name: str,
+    select,
+    where=None,
+    groupBy=None,
+    csort=None,
+    having=None,
+    orderBy=None,
+    groupFlag: int = 1,
+    ascSort=1,
+    ascOrder=1,
+    limit=None,
+    exec: bool = False,
+) -> str:
+    """
+    生成 DolphinDB 查询脚本:
+        tb = loadTable("dfs://{db_name}","{table_name}");
+        query_expr = sql(
+            select=...,
+            from=tb,
+            where=...,
+            ...仅输出提供的参数...
+            groupFlag=...,
+            ascSort=...,
+            ascOrder=...,
+            exec=...
+        );
+        query_expr.eval()
+
+    仅对传入的非 None 参数输出对应行；未提供的不出现。
+    csort 仅在 groupFlag==0 时并且传入不为 None 才输出。
+    select 可为字符串或序列(序列自动包装为 ANY 向量 <[a,b,c]> )
+    其他可为字符串 / 序列(转 ANY) / None
+    ascSort, ascOrder 可为 int 或序列(转 [..])
+    limit: int -> N, (s,e)-> s:e
+    """
+    if not db_name or not table_name:
+        raise ValueError("必须提供 db_name 与 table_name")
+
+    def _to_any_vector(val):
+        if val is None:
+            return None
+        if isinstance(val, (list, tuple)):
+            if not val:
+                return None
+            return "<[" + ",".join(str(x) for x in val) + "]>"
+        return str(val)
+
+    def _to_order_vec(v):
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)):
+            if not v:
+                return None
+            return "[" + ",".join(str(int(x)) for x in v) + "]"
+        return str(int(v))
+
+    def _to_limit(v):
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            s, e = v
+            return f"{int(s)}:{int(e)}"
+        raise ValueError("limit 只能为 None / int / (start,end)")
+
+    select_code = _to_any_vector(select)
+    where_code = _to_any_vector(where)
+    group_code = _to_any_vector(groupBy)
+    csort_code = (
+        _to_any_vector(csort) if (groupFlag == 0 and csort is not None) else None
+    )
+    having_code = _to_any_vector(having)
+    order_code = _to_any_vector(orderBy)
+    asc_sort_code = _to_order_vec(ascSort)
+    asc_order_code = _to_order_vec(ascOrder)
+    limit_code = _to_limit(limit)
+    exec_code = "true" if exec else "false"
+
+    def add_line(name, value, wrap_sqlCol=False):
+        if value is None:
+            return None
+        if wrap_sqlCol and not str(value).startswith("sqlCol("):
+            return f"{name}=sqlCol({value}),"
+        return f"{name}={value},"
+
+    lines = []
+    lines.append(add_line("select", select_code))
+    lines.append("from=tb,")
+    if where_code is not None:
+        lines.append(add_line("where", where_code))
+    if group_code is not None:
+        lines.append(add_line("groupBy", group_code))
+    if csort_code is not None:
+        lines.append(add_line("csort", csort_code))
+    if having_code is not None:
+        lines.append(add_line("having", having_code))
+    if order_code is not None:
+        lines.append(add_line("orderBy", order_code))
+    lines.append(f"groupFlag={int(groupFlag)},")
+    lines.append(f"ascSort={asc_sort_code or '1'},")
+    lines.append(f"ascOrder={asc_order_code or '1'},")
+    if limit_code is not None:
+        lines.append(f"limit={limit_code},")
+    lines.append(f"exec={exec_code}")
+
+    lines = [l for l in lines if l is not None]
+
+    sql_block = "query_expr = sql(\n    " + "\n    ".join(lines) + "\n);"
+
+    script = f"""
+    tb = loadTable("dfs://{db_name}","{table_name}");
+    {sql_block}
+    query_expr.eval()
+    """.strip()
+    return script
 
 
 # def get_query_date_range(

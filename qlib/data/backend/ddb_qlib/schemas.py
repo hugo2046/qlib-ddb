@@ -17,6 +17,7 @@ from typing import List, Tuple, Optional,Dict,Union
 import dolphindb as ddb
 import pandas as pd
 import numpy as np
+from packaging import version
 
 FIELDS_MAPPING: Dict = {
     "TRADE_DT": "date",
@@ -30,6 +31,18 @@ FIELDS_MAPPING: Dict = {
     "S_DQ_ADJFACTOR": "factor", # 后复权因子
     "S_DQ_AVGPRICE": "vwap", # 均价
 }
+
+def get_year_end_freq():
+    """
+    根据 pandas 版本获取年末 ('Year-End') 的频率字符串。
+    - pandas < 2.0.0 使用 'A'
+    - pandas >= 2.0.0 使用 'YE'
+    """
+    if version.parse(pd.__version__) < version.parse("2.0.0"):
+        return 'A'
+    else:
+        return 'YE'
+
 
 
 class TableSchema(BaseModel):
@@ -67,6 +80,7 @@ class QlibTableSchema:
     @classmethod
     def feature_daily(cls) -> TableSchema:
         # storage_name,instrument,freq
+        freq = get_year_end_freq()
         return TableSchema(
             db_name="QlibFeaturesDay",
             table_name="Features",
@@ -85,7 +99,7 @@ class QlibTableSchema:
             partition_type=ddb.settings.RANGE,
             partition_columns="date",
             partitions=np.array(
-                pd.date_range("2010-01-01", "2045-12-31", freq="YE"),
+                pd.date_range("2010-01-01", "2045-12-31", freq=freq),
                 dtype="datetime64[M]",
             ),
         )
@@ -113,6 +127,7 @@ class QlibTableSchema:
         # FIXME:
         # 当freq不为day时，qlib会报错
         # qlib的调用为calendar.xxxx 默认freq为day
+        freq = get_year_end_freq()
         return TableSchema(
             db_name="QlibCalendars",
             table_name="day",
@@ -122,7 +137,7 @@ class QlibTableSchema:
             engine="PKEY",
             primary_key="TRADE_DAYS",
             partitions=np.array(
-                pd.date_range("2000-01-01", "2060-12-31", freq="YE"),
+                pd.date_range("2000-01-01", "2060-12-31", freq=freq),
                 dtype="datetime64[M]",
             ),
         )
