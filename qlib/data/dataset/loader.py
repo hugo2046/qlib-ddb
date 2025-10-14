@@ -534,6 +534,7 @@ class SQLDataLoader(DataLoader):
         else:
             df[datetime_col] = pd.to_datetime(df[datetime_col]).astype("datetime64[s]")
             df:pd.DataFrame = df.set_index([datetime_col, instruments_col])
+            df.index.names = ["datetime", "instrument"]
         return df
 
     def _ensure_pivot_values_column(self, select_clause, pivot_values):
