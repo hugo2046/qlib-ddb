@@ -212,7 +212,15 @@ class Exchange:
             disk_cache=True,
         )
         self.quote_df.columns = self.all_fields
-
+        
+        # 20251015 add for tradestatuscode
+        if "$tradestatuscode" in self.quote_df.columns:
+            # 根据交易状态码来统一停牌标准
+            # 如果 trade_status 为 0，则将 $close 设置为 NaN
+            # 这样后续所有 qlib 的 isna() 判断都会将其识别为停牌
+            self.quote_df.loc[self.quote_df["$tradestatuscode"] == 0, "$close"] = np.nan
+            self.logger.info("Unified suspension status using '$tradestatuscode'.")
+            
         # check buy_price data and sell_price data
         for attr in ("buy_price", "sell_price"):
             pstr = getattr(self, attr)  # price string
