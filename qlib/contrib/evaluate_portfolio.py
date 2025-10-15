@@ -25,8 +25,13 @@ def _get_position_value_from_df(evaluate_date, position, close_data_df):
     """
     value = 0
     for stock_id, report in position.items():
-        if stock_id != "cash":
-            value += report["amount"] * close_data_df["$close"][stock_id][evaluate_date]
+        if stock_id not in ("cash", "now_account_value"):
+            try:
+                value += report["amount"] * close_data_df["$close"][stock_id][evaluate_date]
+            except Exception as e:
+                print(stock_id, evaluate_date)
+                print(close_data_df)
+                raise e
             # value += report['amount'] * report['price']
     if "cash" in position:
         value += position["cash"]
@@ -59,7 +64,7 @@ def get_position_value(evaluate_date, position):
     # load close price for position
     # position should also consider cash
     instruments = list(position.keys())
-    instruments = list(set(instruments) - {"cash"})  # filter 'cash'
+    instruments = list(set(instruments) - {"cash","now_account_value"})  # filter 'cash'
     fields = ["$close"]
     close_data_df = D.features(
         instruments,
@@ -78,7 +83,7 @@ def get_position_list_value(positions):
     instruments = set()
     for day, position in positions.items():
         instruments.update(position.keys())
-    instruments = list(set(instruments) - {"cash"})  # filter 'cash'
+    instruments = list(set(instruments) - {"cash","now_account_value"})  # filter 'cash'
     instruments.sort()
     day_list = list(positions.keys())
     day_list.sort()
