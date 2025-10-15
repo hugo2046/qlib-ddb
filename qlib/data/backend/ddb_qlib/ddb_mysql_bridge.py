@@ -427,7 +427,7 @@ class QlibDDBMySQLInitializer:
             self.sync_instrument()
             self.sync_calendar(exchange_market)
             self.sync_feature_daily(start_date, end_date)
-            self.sync_index_daily(['000300.SH', '000905.SH'], start_date, end_date)
+            self.sync_index_daily(["000300.SH", "000905.SH", "000906.SH", "000852.SH", "399006.SH"], start_date, end_date)
         except Exception as e:
             raise RuntimeError(f"同步所有表失败: {str(e)}") from e
     
