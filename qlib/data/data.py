@@ -782,10 +782,11 @@ class DatasetProvider(abc.ABC):
             return pd.DataFrame()
         
         if not data.empty:
-            column_names,_,_ = normalize_fields_to_ddb(column_names)
-            column_names:List[str] = list(column_names.keys())
+            # column_names,*_ = normalize_fields_to_ddb(column_names)
+            # column_names:List[str] = list(column_names.keys())
             # NOTE:data可能由于部分表达没有对应的基础字段造成缺失,这里使用reindex重新补充防止报错。
-            data = DiskDatasetCache.cache_to_origin_data(data.reindex(columns=column_names), column_names)
+            # data = DiskDatasetCache.cache_to_origin_data(data.reindex(columns=column_names), column_names)
+            data = DiskDatasetCache.cache_to_origin_data(data,column_names)
         else:
             data = pd.DataFrame(
                 index=pd.MultiIndex.from_arrays(
