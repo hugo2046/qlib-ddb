@@ -19,6 +19,8 @@ import pandas as pd
 import numpy as np
 from packaging import version
 
+# date,code,open,high,low,close,volume,amount,factor,vwap 这几个是qlib的标准字段
+# preclose,tradestatuscode,limit,stopping 非必要但是为了为了使回测模块更准确需要添加。
 FIELDS_MAPPING: Dict = {
     "TRADE_DT": "date",
     "S_INFO_WINDCODE": "code",
@@ -26,10 +28,14 @@ FIELDS_MAPPING: Dict = {
     "S_DQ_ADJHIGH": "high",# 后复权最高价
     "S_DQ_ADJLOW": "low", # 后复权最低价
     "S_DQ_ADJCLOSE": "close", # 后复权收盘价
+    "S_DQ_ADJPRECLOSE": "preclose", # 后复权前收盘价
     "S_DQ_VOLUME": "volume", # 成交量(手)
     "S_DQ_AMOUNT": "amount", # 成交金额(千元)
     "S_DQ_ADJFACTOR": "factor", # 后复权因子
     "S_DQ_AVGPRICE": "vwap", # 均价
+    "S_DQ_TRADESTATUSCODE":"tradestatuscode", # 交易状态代码
+    "S_DQ_LIMIT":"limit", # 涨跌停价格
+    "S_DQ_STOPPING":"stopping", # 是否停牌
 }
 
 def get_year_end_freq():
@@ -91,15 +97,19 @@ class QlibTableSchema:
                 ("high", "DOUBLE"),
                 ("low", "DOUBLE"),
                 ("close", "DOUBLE"),
+                ("preclose", "DOUBLE"),
                 ("volume", "DOUBLE"),
                 ("amount", "DOUBLE"),
                 ("factor", "DOUBLE"),
                 ("vwap", "DOUBLE"),
+                ("tradestatuscode", "INT"),
+                ("limit", "DOUBLE"),
+                ("stopping", "DOUBLE"),
             ],
             partition_type=ddb.settings.RANGE,
             partition_columns="date",
             partitions=np.array(
-                pd.date_range("2010-01-01", "2045-12-31", freq=freq),
+                pd.date_range("2000-01-01", "2060-12-31", freq=freq),
                 dtype="datetime64[M]",
             ),
         )
