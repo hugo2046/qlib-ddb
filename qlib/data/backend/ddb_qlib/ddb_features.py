@@ -17,7 +17,7 @@ import pandas as pd
 from packaging import version
 
 from ....log import get_module_logger
-from ....utils import normalize_cache_fields
+from ....utils import normalize_cache_fields,remove_fields_space
 from .schemas import QlibTableSchema
 
 # qlib表达式与ddb表达式对应表
@@ -96,7 +96,7 @@ def register_ddb_functions_to_qlib(session: ddb.Session) -> None:
 
 def normalize_fields_to_ddb(
     fields: Union[str, List[str], Dict],
-) -> Tuple[Dict, List, bool]:
+) -> Tuple[Dict, List, bool,Dict]:
     """
     规范化字段为 DolphinDB 表达式，并保持输入顺序（list 或 dict 的顺序）。
     - 支持 str / list / dict 输入。
@@ -117,6 +117,9 @@ def normalize_fields_to_ddb(
     else:
         raise TypeError("fields must be str, list or dict")
 
+    # 这个字典将别名映射回最原始的表达式
+    alias_to_origin_expr_map = {alias: remove_fields_space(expr) for expr, alias in fields_od.items()}
+    
     # 逐项归一化，按 fields_od key 顺序，归一化阶段去重
     exprs: Dict[str, str] = {}
     for expr, alias in fields_od.items():
@@ -152,7 +155,7 @@ def normalize_fields_to_ddb(
     pure_pattern = re.compile(r"^\$([a-zA-Z_][a-zA-Z0-9_]*)$")
     is_pure_fields: bool = all(bool(pure_pattern.match(e)) for e in fields_od.keys())
 
-    return normalized_expr, base_fields, is_pure_fields
+    return normalized_expr, base_fields, is_pure_fields, alias_to_origin_expr_map
 
 
 def build_field_expr(
@@ -219,8 +222,8 @@ def fetch_features_from_ddb(
     """
     from .schemas import QlibTableSchema
 
-    normalized_expr, base_fields, is_pure_fields = normalize_fields_to_ddb(fields)
-    reversed_expr: Dict = {v: k for k, v in normalized_expr.items()}
+    normalized_expr, base_fields, is_pure_fields, alias_to_origin_expr_map = normalize_fields_to_ddb(fields)
+    # reversed_expr: Dict = {v: k for k, v in normalized_expr.items()}
 
     _freq: str = "daily" if freq == "day" else "min"
     feature_schema: QlibTableSchema = getattr(QlibTableSchema(), f"feature_{_freq}")()
@@ -339,6 +342,7 @@ def fetch_features_from_ddb(
 
     data = data.sort_index()
     if is_pure_fields:
+        data.columns = "$" + data.columns
         return data
     # 重命名columns将$改为去掉$或根据已有的字典进行重命名
     try:
@@ -351,9 +355,8 @@ def fetch_features_from_ddb(
     except Exception as e:
         # 出错则保持原始列顺序
         raise e
-
     # 最后再重命名 alias -> 输出列名
-    data = data.rename(columns=reversed_expr)
+    data = data.rename(columns=alias_to_origin_expr_map)
 
     return data
 
