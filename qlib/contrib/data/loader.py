@@ -1,4 +1,8 @@
 from qlib.data.dataset.loader import QlibDataLoader
+from qlib.data.backend.ddb_qlib.utils import add_dollar_sign_to_params,extract_function_name
+import re
+from typing import List,Tuple
+from pathlib import Path
 
 
 class Alpha360DL(QlibDataLoader):
@@ -308,3 +312,71 @@ class Alpha158DL(QlibDataLoader):
                 names += ["VSUMD%d" % d for d in windows]
 
         return fields, names
+
+
+class AlphaFileLoader(QlibDataLoader):
+    """
+    从.dos文件中加载因子表达式的通用数据加载器基类。
+    子类需要提供 `dos_file_path`, `alpha_pattern`, 和 `default_exclude_list`。
+    """
+    dos_file_path: str = ""
+    alpha_pattern: str = ""
+    default_exclude_list: List[str] = []
+
+    def __init__(self, config: dict = None, **kwargs):
+        _config = {
+            "feature": self.get_feature_config(),
+        }
+        if config is not None:
+            _config.update(config)
+        super().__init__(config=_config, **kwargs)
+
+    @classmethod
+    def get_feature_config(cls, exclude: List[str] = None) -> Tuple[List[str], List[str]]:
+        """
+        从.dos文件解析并返回特征配置。
+        """
+        if not cls.dos_file_path or not cls.alpha_pattern:
+            raise NotImplementedError("子类必须定义 `dos_file_path` 和 `alpha_pattern`。")
+
+        if exclude is None:
+            exclude = cls.default_exclude_list
+
+        with open(cls.dos_file_path, encoding="utf-8") as file:
+            alpha_content = file.read()
+
+        matches = re.findall(cls.alpha_pattern, alpha_content)
+
+        alpha_expr = [add_dollar_sign_to_params(expr) for expr in matches]
+        alpha_name = [extract_function_name(expr) for expr in matches]
+
+        # 根据排除列表进行过滤
+        filtered_expr = [
+            expr for expr in alpha_expr if not any(ex in expr for ex in exclude)
+        ]
+        filtered_name = [
+            name
+            for name, expr in zip(alpha_name, alpha_expr)
+            if not any(ex in expr for ex in exclude)
+        ]
+
+        return filtered_expr, filtered_name
+
+class AlphaGtja191DL(AlphaFileLoader):
+    """Dataloader to get AlphaGtja191"""
+    dos_file_path = str(Path(__file__).parents[2] / "data/backend/ddb_qlib/ddb_scripts/gtja191Alpha.dos")
+    alpha_pattern = r"def (gtjaAlpha\d+\([^)]*\))"
+    default_exclude_list = ["$index_close", "$index_open", "$MKT", "$SMB", "$HML"]
+    
+    
+class AlphaWorldQuant101DL(AlphaFileLoader):
+    """Dataloader to get AlphaWorldQuant101"""
+    dos_file_path = str(Path(__file__).parents[2] / "data/backend/ddb_qlib/ddb_scripts/wq101alpha.dos")
+    alpha_pattern = r"def (WQAlpha\d+\([^)]*\))"
+    default_exclude_list = ["$indclass"]
+    
+
+    
+if __name__ == "__main__":
+    dl = AlphaGtja191DL()
+    print(dl.get_feature_config)
