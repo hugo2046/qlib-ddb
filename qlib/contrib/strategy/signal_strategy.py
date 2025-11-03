@@ -197,6 +197,7 @@ class TopkDropoutStrategy(BaseSignalStrategy):
         last = pred_score.reindex(current_stock_list).sort_values(ascending=False).index
         # The new stocks today want to buy **at most**
         if self.method_buy == "top":
+            # NOTE:如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入
             today = get_first_n(
                 pred_score[~pred_score.index.isin(last)].sort_values(ascending=False).index,
                 self.n_drop + self.topk - len(last),
@@ -229,6 +230,10 @@ class TopkDropoutStrategy(BaseSignalStrategy):
 
         # Get the stock list we really want to buy
         buy = today[: len(sell) + self.topk - len(last)]
+        # NOTE:如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入
+        # 所以在这里建立验证过滤np.nan
+        valid_buy_scores = pred_score.reindex(buy).dropna()
+        buy = valid_buy_scores.index.tolist()
         for code in current_stock_list:
             if not self.trade_exchange.is_stock_tradable(
                 stock_id=code,
