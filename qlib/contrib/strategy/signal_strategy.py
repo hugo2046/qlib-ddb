@@ -230,10 +230,11 @@ class TopkDropoutStrategy(BaseSignalStrategy):
 
         # Get the stock list we really want to buy
         buy = today[: len(sell) + self.topk - len(last)]
-        # NOTE:如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入
+        # FIXME:如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入
         # 所以在这里建立验证过滤np.nan
-        valid_buy_scores = pred_score.reindex(buy).dropna()
-        buy = valid_buy_scores.index.tolist()
+        # valid_buy_scores = pred_score.reindex(buy).dropna()
+        # buy = valid_buy_scores.index.tolist()
+    
         for code in current_stock_list:
             if not self.trade_exchange.is_stock_tradable(
                 stock_id=code,
@@ -298,6 +299,178 @@ class TopkDropoutStrategy(BaseSignalStrategy):
             )
             buy_order_list.append(buy_order)
         return TradeDecisionWO(sell_order_list + buy_order_list, self)
+    
+class TopkRebalanceStrategy(BaseSignalStrategy):
+    """Top-K再平衡策略
+
+    该策略在每个调仓日执行以下操作：
+    1. 根据预测信号对所有股票进行排序。
+    2. 选出得分最高或最低的 `topk` 只股票作为目标投资组合。
+    3. 卖出当前持仓中所有不在目标投资组合里的股票。
+    4. 调整持仓，使得目标投资组合中的每只股票都达到等权重。
+    """
+    # TopkDropoutStrategy有点不符合直-
+    #
+    # 直接选取Topk的股票进行等权配置
+    # 买入topk股票，卖出非topk股票
+    def __init__(self,
+        *,
+        topk,
+        method_buy="top",
+        hold_thresh=1,
+        only_tradable=False,
+        forbid_all_trade_at_limit=True,
+        n_drop=None, # for backward compatibility
+        **kwargs,)->None:
+        """
+        :param topk: int
+            投资组合中的目标股票数量。
+        :param method_buy: str
+            买入方法，可以是 'top'（买入得分最高的）或 'bottom'（买入得分最低的）。
+        :param hold_thresh: int
+            最短持有天数。在卖出股票前，会检查 `current.get_stock_count(order.stock_id) >= self.hold_thresh`。
+        :param only_tradable: bool
+            买卖时是否只考虑可交易的股票。
+            如果为 True，策略将根据股票的交易状态进行决策，避免买卖不可交易的股票。
+            如果为 False，策略在决策时不会检查股票的交易状态。
+        :param forbid_all_trade_at_limit: bool
+            当价格达到涨跌停限制时，是否禁止所有交易。
+            如果为 True，当价格达到涨跌停时，策略不会进行任何交易。
+            如果为 False，策略将在涨停时卖出，在跌停时买入。
+        :param n_drop: int, optional
+            为保持向后兼容性而保留的参数，当前策略中未使用。
+        """
+        super().__init__(**kwargs)
+        self.topk = topk
+        self.method_buy = method_buy
+        self.hold_thresh = hold_thresh
+        self.only_tradable = only_tradable
+        self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
+    
+    def generate_trade_decision(self, execute_result=None):
+        """
+        生成交易决策。
+
+        该方法执行以下步骤：
+        1. 获取最新的预测得分。
+        2. 根据得分和 `method_buy` 选择Top-K或Bottom-K的股票作为目标持仓。
+        3. 卖出当前持仓中不在目标名单里的股票。
+        4. 将投资组合调整为对目标股票进行等权重持仓。
+        """
+        # get the number of trading step finished, trade_step can be [0, 1, 2, ..., trade_len - 1]
+        trade_step = self.trade_calendar.get_trade_step()
+        trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
+        pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
+        pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
+
+        if isinstance(pred_score, pd.DataFrame):
+            pred_score = pred_score.iloc[:, 0]
+        if pred_score is None or pred_score.empty:
+            return TradeDecisionWO([], self)
+        
+        # 解决 "如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入" 的问题
+        pred_score = pred_score.dropna()
+        if pred_score.empty:
+            return TradeDecisionWO([], self)
+
+        # 1. get topk stocks
+        if self.method_buy == "top":
+            sorted_score = pred_score.sort_values(ascending=False)
+        elif self.method_buy == "bottom":
+            sorted_score = pred_score.sort_values(ascending=True)
+        else:
+            raise NotImplementedError(f"method_buy '{self.method_buy}' is not supported!")
+
+        if self.only_tradable:
+            tradable_stocks = []
+            for stock_id in sorted_score.index:
+                if self.trade_exchange.is_stock_tradable(
+                    stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time
+                ):
+                    tradable_stocks.append(stock_id)
+                if len(tradable_stocks) == self.topk:
+                    break
+            target_stocks = pd.Index(tradable_stocks)
+        else:
+            target_stocks = sorted_score.index[:self.topk]
+
+        # 2. get current position and generate sell orders
+        current_position = self.trade_position
+        current_stock_list = current_position.get_stock_list()
+        
+        sell_stocks = pd.Index(current_stock_list).difference(target_stocks)
+        
+        # Create a temporary position to simulate trades and cash changes
+        current_temp: Position = copy.deepcopy(current_position)
+        sell_order_list = []
+
+        for code in sell_stocks:
+            if not self.trade_exchange.is_stock_tradable(
+                stock_id=code,
+                start_time=trade_start_time,
+                end_time=trade_end_time,
+                direction=None if self.forbid_all_trade_at_limit else OrderDir.SELL,
+            ):
+                continue
+            
+            time_per_step = self.trade_calendar.get_freq()
+            if current_temp.get_stock_count(code, bar=time_per_step) < self.hold_thresh:
+                continue
+
+            sell_amount = current_temp.get_stock_amount(code=code)
+            sell_order = Order(
+                stock_id=code,
+                amount=sell_amount,
+                start_time=trade_start_time,
+                end_time=trade_end_time,
+                direction=Order.SELL,
+            )
+            if self.trade_exchange.check_order(sell_order):
+                sell_order_list.append(sell_order)
+                # Simulate trade to update cash
+                self.trade_exchange.deal_order(sell_order, position=current_temp)
+
+        # 3. generate buy orders for equal weight
+        # get the total value after selling
+        total_value = current_temp.get_cash() + current_temp.calculate_stock_value()
+        target_value_per_stock = total_value * self.risk_degree / self.topk if self.topk > 0 else 0
+        
+        order_list = sell_order_list
+        
+        for code in target_stocks:
+            current_amount = current_temp.get_stock_amount(code)
+            
+            deal_price = self.trade_exchange.get_deal_price(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.BUY
+            )
+            if deal_price is None:
+                continue
+
+            target_amount = self.trade_exchange.round_amount_by_trade_unit(target_value_per_stock / deal_price, 1)
+            amount_diff = target_amount - current_amount
+
+            if abs(amount_diff) > 1e-6: # avoid small amount trading
+                direction = Order.BUY if amount_diff > 0 else Order.SELL
+                
+                if not self.trade_exchange.is_stock_tradable(
+                    stock_id=code,
+                    start_time=trade_start_time,
+                    end_time=trade_end_time,
+                    direction=None if self.forbid_all_trade_at_limit else (OrderDir.BUY if direction == Order.BUY else OrderDir.SELL),
+                ):
+                    continue
+
+                order = Order(
+                    stock_id=code,
+                    amount=abs(amount_diff),
+                    start_time=trade_start_time,
+                    end_time=trade_end_time,
+                    direction=direction,
+                )
+                if self.trade_exchange.check_order(order):
+                    order_list.append(order)
+
+        return TradeDecisionWO(order_list, self)
 
 
 class WeightStrategyBase(BaseSignalStrategy):
