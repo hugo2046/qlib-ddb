@@ -22,6 +22,11 @@ from qlib.contrib.strategy.order_generator import OrderGenerator, OrderGenWOInte
 from qlib.contrib.strategy.optimizer import EnhancedIndexingOptimizer
 
 
+# Constants for TopkRebalanceStrategy
+MIN_TRADE_AMOUNT_THRESHOLD = 1e-6  # Minimum threshold for trade amount to avoid dust trades
+DEFAULT_TRADE_UNIT_FACTOR = 1  # Default trade unit factor for round_amount_by_trade_unit
+
+
 class BaseSignalStrategy(BaseStrategy, ABC):
     def __init__(
         self,
@@ -301,18 +306,17 @@ class TopkDropoutStrategy(BaseSignalStrategy):
         return TradeDecisionWO(sell_order_list + buy_order_list, self)
     
 class TopkRebalanceStrategy(BaseSignalStrategy):
-    """Top-K再平衡策略
+    """Top-K Rebalance Strategy
 
-    该策略在每个调仓日执行以下操作：
-    1. 根据预测信号对所有股票进行排序。
-    2. 选出得分最高或最低的 `topk` 只股票作为目标投资组合。
-    3. 卖出当前持仓中所有不在目标投资组合里的股票。
-    4. 调整持仓，使得目标投资组合中的每只股票都达到等权重。
+    This strategy performs the following operations on each rebalancing date:
+    1. Sort all stocks based on prediction signals.
+    2. Select the topk or bottomk stocks with highest or lowest scores as target portfolio.
+    3. Sell all stocks in current position that are not in the target portfolio.
+    4. Adjust holdings to achieve equal weight for each stock in the target portfolio.
+
+    Note: This strategy provides a cleaner approach compared to TopkDropoutStrategy
+    by directly selecting topk stocks for equal weight configuration.
     """
-    # TopkDropoutStrategy有点不符合直-
-    #
-    # 直接选取Topk的股票进行等权配置
-    # 买入topk股票，卖出非topk股票
     def __init__(self,
         *,
         topk,
@@ -346,16 +350,201 @@ class TopkRebalanceStrategy(BaseSignalStrategy):
         self.hold_thresh = hold_thresh
         self.only_tradable = only_tradable
         self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
-    
+
+    def _get_tradable_stocks(self, stock_candidates, trade_start_time, trade_end_time):
+        """
+        Get tradable stocks from candidates based on tradability check.
+
+        Parameters
+        ----------
+        stock_candidates : pd.Index
+            Candidate stock IDs to check for tradability
+        trade_start_time : pd.Timestamp
+            Start time for tradability check
+        trade_end_time : pd.Timestamp
+            End time for tradability check
+
+        Returns
+        -------
+        pd.Index
+            Tradable stocks (subset of input candidates)
+        """
+        if not self.only_tradable:
+            return stock_candidates[:self.topk]
+
+        tradable_stocks = []
+        for stock_id in stock_candidates:
+            if self.trade_exchange.is_stock_tradable(
+                stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time
+            ):
+                tradable_stocks.append(stock_id)
+                if len(tradable_stocks) == self.topk:
+                    break
+        return pd.Index(tradable_stocks)
+
+    def _is_stock_tradable_with_direction(self, stock_id, direction, trade_start_time, trade_end_time):
+        """
+        Check if a stock is tradable considering direction and limit restrictions.
+
+        Parameters
+        ----------
+        stock_id : str
+            Stock ID to check
+        direction : OrderDir
+            Trading direction (BUY/SELL)
+        trade_start_time : pd.Timestamp
+            Start time for tradability check
+        trade_end_time : pd.Timestamp
+            End time for tradability check
+
+        Returns
+        -------
+        bool
+            True if stock is tradable under given conditions
+        """
+        direction_param = None if self.forbid_all_trade_at_limit else direction
+        return self.trade_exchange.is_stock_tradable(
+            stock_id=stock_id,
+            start_time=trade_start_time,
+            end_time=trade_end_time,
+            direction=direction_param,
+        )
+
+    def _create_order(self, stock_id, amount, direction, trade_start_time, trade_end_time):
+        """
+        Create and validate a trading order.
+
+        Parameters
+        ----------
+        stock_id : str
+            Stock ID to trade
+        amount : float
+            Trade amount
+        direction : OrderDir
+            Trading direction
+        trade_start_time : pd.Timestamp
+            Order start time
+        trade_end_time : pd.Timestamp
+            Order end time
+
+        Returns
+        -------
+        Order or None
+            Validated order or None if invalid
+        """
+        order = Order(
+            stock_id=stock_id,
+            amount=amount,
+            start_time=trade_start_time,
+            end_time=trade_end_time,
+            direction=direction,
+        )
+        return order if self.trade_exchange.check_order(order) else None
+
+    def _generate_sell_orders(self, sell_stocks, current_temp, trade_start_time, trade_end_time):
+        """
+        Generate sell orders for stocks that need to be sold.
+
+        Parameters
+        ----------
+        sell_stocks : pd.Index
+            Stocks to sell
+        current_temp : Position
+            Temporary position for simulation
+        trade_start_time : pd.Timestamp
+            Trading start time
+        trade_end_time : pd.Timestamp
+            Trading end time
+
+        Returns
+        -------
+        list
+            List of sell orders
+        """
+        sell_orders = []
+        time_per_step = self.trade_calendar.get_freq()
+
+        for stock_id in sell_stocks:
+            if not self._is_stock_tradable_with_direction(stock_id, OrderDir.SELL, trade_start_time, trade_end_time):
+                continue
+
+            if current_temp.get_stock_count(stock_id, bar=time_per_step) < self.hold_thresh:
+                continue
+
+            sell_amount = current_temp.get_stock_amount(code=stock_id)
+            sell_order = self._create_order(
+                stock_id, sell_amount, OrderDir.SELL, trade_start_time, trade_end_time
+            )
+
+            if sell_order:
+                sell_orders.append(sell_order)
+                # Simulate trade to update cash
+                self.trade_exchange.deal_order(sell_order, position=current_temp)
+
+        return sell_orders
+
+    def _generate_buy_orders(self, target_stocks, current_temp, trade_start_time, trade_end_time):
+        """
+        Generate buy orders to achieve equal weight target portfolio.
+
+        Parameters
+        ----------
+        target_stocks : pd.Index
+            Target stocks for portfolio
+        current_temp : Position
+            Temporary position with updated cash after sells
+        trade_start_time : pd.Timestamp
+            Trading start time
+        trade_end_time : pd.Timestamp
+            Trading end time
+
+        Returns
+        -------
+        list
+            List of buy orders
+        """
+        buy_orders = []
+        total_value = current_temp.get_cash() + current_temp.calculate_stock_value()
+        target_value_per_stock = total_value * self.risk_degree / self.topk if self.topk > 0 else 0
+
+        for stock_id in target_stocks:
+            current_amount = current_temp.get_stock_amount(stock_id)
+
+            deal_price = self.trade_exchange.get_deal_price(
+                stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.BUY
+            )
+            if deal_price is None:
+                continue
+
+            target_amount = self.trade_exchange.round_amount_by_trade_unit(
+                target_value_per_stock / deal_price, DEFAULT_TRADE_UNIT_FACTOR
+            )
+            amount_diff = target_amount - current_amount
+
+            if abs(amount_diff) > MIN_TRADE_AMOUNT_THRESHOLD:
+                direction = Order.BUY if amount_diff > 0 else Order.SELL
+                trade_direction = OrderDir.BUY if direction == Order.BUY else OrderDir.SELL
+
+                if not self._is_stock_tradable_with_direction(stock_id, trade_direction, trade_start_time, trade_end_time):
+                    continue
+
+                buy_order = self._create_order(
+                    stock_id, abs(amount_diff), direction, trade_start_time, trade_end_time
+                )
+                if buy_order:
+                    buy_orders.append(buy_order)
+
+        return buy_orders
+
     def generate_trade_decision(self, execute_result=None):
         """
-        生成交易决策。
+        Generate trading decisions.
 
-        该方法执行以下步骤：
-        1. 获取最新的预测得分。
-        2. 根据得分和 `method_buy` 选择Top-K或Bottom-K的股票作为目标持仓。
-        3. 卖出当前持仓中不在目标名单里的股票。
-        4. 将投资组合调整为对目标股票进行等权重持仓。
+        This method executes the following steps:
+        1. Get the latest prediction scores.
+        2. Select Top-K or Bottom-K stocks based on scores and method_buy as target holdings.
+        3. Sell stocks in current position that are not in the target list.
+        4. Rebalance portfolio to achieve equal weight for target stocks.
         """
         # get the number of trading step finished, trade_step can be [0, 1, 2, ..., trade_len - 1]
         trade_step = self.trade_calendar.get_trade_step()
@@ -368,7 +557,8 @@ class TopkRebalanceStrategy(BaseSignalStrategy):
         if pred_score is None or pred_score.empty:
             return TradeDecisionWO([], self)
         
-        # 解决 "如果score部分为[1,2,3,np.nan,np.nan],topk=5,n_drop=0时。则会把np.nan部分也纳入" 的问题
+        # Remove NaN values to avoid including them in target portfolio
+        # This addresses the issue where NaN values could be selected when topk exceeds available valid scores
         pred_score = pred_score.dropna()
         if pred_score.empty:
             return TradeDecisionWO([], self)
@@ -381,96 +571,21 @@ class TopkRebalanceStrategy(BaseSignalStrategy):
         else:
             raise NotImplementedError(f"method_buy '{self.method_buy}' is not supported!")
 
-        if self.only_tradable:
-            tradable_stocks = []
-            for stock_id in sorted_score.index:
-                if self.trade_exchange.is_stock_tradable(
-                    stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time
-                ):
-                    tradable_stocks.append(stock_id)
-                if len(tradable_stocks) == self.topk:
-                    break
-            target_stocks = pd.Index(tradable_stocks)
-        else:
-            target_stocks = sorted_score.index[:self.topk]
+        target_stocks = self._get_tradable_stocks(sorted_score.index, trade_start_time, trade_end_time)
 
-        # 2. get current position and generate sell orders
+        # 2. Generate sell orders
         current_position = self.trade_position
         current_stock_list = current_position.get_stock_list()
-        
         sell_stocks = pd.Index(current_stock_list).difference(target_stocks)
-        
+
         # Create a temporary position to simulate trades and cash changes
         current_temp: Position = copy.deepcopy(current_position)
-        sell_order_list = []
+        sell_orders = self._generate_sell_orders(sell_stocks, current_temp, trade_start_time, trade_end_time)
 
-        for code in sell_stocks:
-            if not self.trade_exchange.is_stock_tradable(
-                stock_id=code,
-                start_time=trade_start_time,
-                end_time=trade_end_time,
-                direction=None if self.forbid_all_trade_at_limit else OrderDir.SELL,
-            ):
-                continue
-            
-            time_per_step = self.trade_calendar.get_freq()
-            if current_temp.get_stock_count(code, bar=time_per_step) < self.hold_thresh:
-                continue
+        # 3. Generate buy orders for equal weight
+        buy_orders = self._generate_buy_orders(target_stocks, current_temp, trade_start_time, trade_end_time)
 
-            sell_amount = current_temp.get_stock_amount(code=code)
-            sell_order = Order(
-                stock_id=code,
-                amount=sell_amount,
-                start_time=trade_start_time,
-                end_time=trade_end_time,
-                direction=Order.SELL,
-            )
-            if self.trade_exchange.check_order(sell_order):
-                sell_order_list.append(sell_order)
-                # Simulate trade to update cash
-                self.trade_exchange.deal_order(sell_order, position=current_temp)
-
-        # 3. generate buy orders for equal weight
-        # get the total value after selling
-        total_value = current_temp.get_cash() + current_temp.calculate_stock_value()
-        target_value_per_stock = total_value * self.risk_degree / self.topk if self.topk > 0 else 0
-        
-        order_list = sell_order_list
-        
-        for code in target_stocks:
-            current_amount = current_temp.get_stock_amount(code)
-            
-            deal_price = self.trade_exchange.get_deal_price(
-                stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.BUY
-            )
-            if deal_price is None:
-                continue
-
-            target_amount = self.trade_exchange.round_amount_by_trade_unit(target_value_per_stock / deal_price, 1)
-            amount_diff = target_amount - current_amount
-
-            if abs(amount_diff) > 1e-6: # avoid small amount trading
-                direction = Order.BUY if amount_diff > 0 else Order.SELL
-                
-                if not self.trade_exchange.is_stock_tradable(
-                    stock_id=code,
-                    start_time=trade_start_time,
-                    end_time=trade_end_time,
-                    direction=None if self.forbid_all_trade_at_limit else (OrderDir.BUY if direction == Order.BUY else OrderDir.SELL),
-                ):
-                    continue
-
-                order = Order(
-                    stock_id=code,
-                    amount=abs(amount_diff),
-                    start_time=trade_start_time,
-                    end_time=trade_end_time,
-                    direction=direction,
-                )
-                if self.trade_exchange.check_order(order):
-                    order_list.append(order)
-
-        return TradeDecisionWO(order_list, self)
+        return TradeDecisionWO(sell_orders + buy_orders, self)
 
 
 class WeightStrategyBase(BaseSignalStrategy):
