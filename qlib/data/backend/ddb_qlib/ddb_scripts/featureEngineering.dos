@@ -2,7 +2,7 @@
 * @Author: Hugo
 * @Date: 2024-12-05 10:45:18
  * @LastEditors: shen.lan123@gmail.com
- * @LastEditTime: 2025-08-20 16:14:22
+ * @LastEditTime: 2025-11-29 10:34:21
 * @Description: 查询相关函数
 */
 
@@ -94,65 +94,17 @@ def union_dict(dicts){
 };
 
 
-/**
- * @brief 将矩阵转换为表格
- * @details 此函数将输入矩阵转换为表格形式。首先提取矩阵的行名和列名，
- *          然后将矩阵数据转换为表格，添加日期列(使用行名)，
- *          接着对表格进行unpivot操作（将宽表转换为长表），
- *          最后重命名列名（将'valueType'重命名为'code'，'value'重命名为'alpha'）
- * 
- * @param inputMatrix 输入矩阵，需要包含行名和列名
- * @return table 转换后的表格，包含date、code和alpha三列
- */
-def transMatrixToTable(inputMatrix,alphaName){
-    data = table(inputMatrix.rowNames() as date, inputMatrix).unpivot(`date, inputMatrix.columnNames()).rename!(`valueType`value, [`code,alphaName]);
-    return data;
-};
-
-
-/**
- * @brief 获取多个表的所有唯一列名
- * @param dfs 包含多个内存表的列表
- * @return 所有表中的不重复列名列表
- */
-def unionTableColumnNames(dfs){
-    // 初始化空列表用于存储列名
-    colNames = [];
-    
-    // 遍历每个表，提取其列名
-    for (df in dfs){
-        colNames.append!(df.columnNames());
-    };
-    
-    // 返回去重后的列名列表
-    return distinct(flatten(colNames));
-};
-
-
-/*
-* 创建日期映射字典
-* @param x 日期
-* @param TradeDays 交易日列表
-*/
-def mapTradeDay2Indx(x,TradeDays){
-    Length = size(TradeDays);
-    tradeDayMapping = dict(TradeDays,seq(0,Length-1));
-    
-    return tradeDayMapping[x]
-};
-
-
 /*
 * 创建日期筛选
 * @param dateName 日期字段名
 * @param start_dt 开始日期
 * @param end_dt 结束日期
 */
-def CreateDateRange(dateName,start_dt,end_dt){
+// def CreateDateRange(dateName,start_dt,end_dt){
 
-    return expr(sqlCol(dateName),between,pair(start_dt,end_dt));
+//     return expr(sqlCol(dateName),between,pair(start_dt,end_dt));
 
-};
+// };
 
 /*
 * 根据代码创建数据源
@@ -164,10 +116,12 @@ def CreateDateRange(dateName,start_dt,end_dt){
 def CreateDSByCode(db_path,table_name,column_name=`code){
 
     tb = loadTable("dfs://" + db_path,table_name);
+    
     return repartitionDS(<select * from tb>, column_name,HASH,50);
 };
 
 
+// FIXME: 目前按日期范围分区存在问题，后续优化当前是虚假的分区
 /*
 * 创建日期筛选
 * @param db_path 数据库路径
@@ -177,31 +131,21 @@ def CreateDSByCode(db_path,table_name,column_name=`code){
 * @param column_name 日期字段名
 * @return 重新分区的数据集
 */
-def CreateDSByDate(db_path,table_name,start_time,end_time,column_name=`date){
+def CreateDSByDate(db_path,table_name,start_time,end_time,baseFields,column_name=`date){
 
     offset_date = temporalAdd(end_time,1,`SSE);
     tb = loadTable("dfs://"+db_path,table_name);
-    return repartitionDS(<select * from tb>, column_name,RANGE,[start_time,offset_date]);
+    return repartitionDS(<select date,code,_$$baseFields from tb>,column_name,RANGE,[start_time,offset_date]);
+    // tradeDays = getMarketCalendar("XSHG",start_time, end_time);
+    // tb = loadTable("dfs://"+db_path,table_name);
+    // stepRng = groups(bar(tradeDays, 180d)).keys()
+    // beginDt = 
+    // stepRng.append!([start_time,offset_date])
+    // stepRng.sort!();
+    // return repartitionDS(<select * from tb>, column_name,RANGE,stepRng);
 };
 
 
-/*
-* 计算特征
-* @param tb 数据表
-* @param featureDict 特征字典，键为特征表达式，值为特征别名
-* @param instruemnts 证券代码列表
-* @param start_date 开始日期
-* @param end_date 结束日期
-* @return 返回计算后的特征数据表
-*/
-def CalcFeatures(tb,featureDict,instruemnts,start_date,end_date){
-
-    featureExpr = sqlCol(`code`date).append!(sqlColAlias(parseExpr(featureDict.keys()),featureDict.values()));
-    
-    whereCond = [CreateDateRange(`date,start_date,end_date),expr(sqlCol(`code),in,instruemnts)];
-    // 使用context by 默认使用code分组
-    return sql(select=featureExpr,from=tb,where=whereCond,groupBy=sqlCol(`code),groupFlag=0,csort=sqlCol(`date)).eval();
-};
 
 /**
  * @brief 根据基础字段和表结构生成字段表达式列表
@@ -229,7 +173,7 @@ def buildFieldExpr(tb, baseFields){
         }
     }
     return fieldExpr;
-}
+};
 
 
 /**
@@ -336,33 +280,8 @@ def calcPanelFeatures(tb,expressions,baseFields,instruments,start_date,end_date)
         print("没有成功计算的表达式结果");
         return table(100:0, [`date, `code], [DATE, SYMBOL]);
     };
-
+    
     return result_dict;
-}
-
-
-/*
-* 对给定的投资工具执行特征工程。
-* @param instruemnts 要处理的投资工具列表。
-* @param featureDict 要计算的特征字典。
-* @param start_time 数据选择的起始时间。
-* @param end_time 数据选择的结束时间。
-* @param db_path 数据库路径。
-* @param table_name 数据库中的表名。
-* @param mr_by_code 布尔标志，用于确定是否使用代码进行数据选择。
-* @param column_name 用于基于代码的数据选择的列名（默认为`code）。
-* @return 特征工程过程的结果。
-*/
-def FeatureEngineering(instruemnts,featureDict,start_time,end_time,db_path,table_name,mr_by_code=true,column_name=`code){
-
-    if (mr_by_code){
-        ds = CreateDSByCode(db_path,table_name,column_name);
-    };
-    else{
-        ds = CreateDSByDate(db_path,table_name,start_time,end_time,column_name);
-    };
-    return mr(ds, CalcFeatures{,featureDict,instruemnts,start_time,end_time}, , unionAll{, false});
-
 };
 
 
@@ -382,8 +301,22 @@ def FeatureEngineering(instruemnts,featureDict,start_time,end_time,db_path,table
  */
 def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name){
 
-    ds = CreateDSByDate(db_name,table_name,start_time,end_time,`date);
-
-    // return mr(ds, calcPanelFeatures{,expressions,baseFields,instruments,start_time,end_time}, , unionAll{, false},parallel=true);
-    return mr(ds, calcPanelFeatures{,expressions,baseFields,instruments,start_time,end_time}, , union_dict ,parallel=true);
+    ds = CreateDSByDate(db_name,table_name,start_time,end_time,baseFields,`date);
+    
+    return mr(ds, calcPanelFeatures{,expressions,baseFields,instruments,start_time,end_time}, , union_dict,parallel=true);
 };
+
+
+
+// NOTE:测试部分
+// res = FeatureEngineeringByDate(['000852.SH'], ['close\\move(close,1)-1'], ['close'], 2017.01.03, 2017.11.21, "QlibFeaturesDay", "Features")
+
+// ds = CreateDSByDate("QlibFeaturesDay", "Features",2017.01.03, 2025.11.24,`date);
+// tb = select * from loadTable("dfs://QlibFeaturesDay","Features") where date between pair(2025.01.03,2025.11.21);
+// calcPanelFeatures(tb,'close-open',"close",'000852.SH',2017.01.03, 2025.11.21);
+// select code,date,close\move(close,1)-1 from ds[0] where code=='000852.SH'
+
+// calcPanelFeatures(ds[0],dict(['close'],["aaa"]),['close'],['000852.SH'],2017.01.03, 2017.11.21)
+
+
+// res_arr = flatten(res)
