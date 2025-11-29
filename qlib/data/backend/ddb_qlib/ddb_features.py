@@ -300,7 +300,15 @@ def fetch_features_from_ddb(
         FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,"{db_name}","{table_name}")
         """
         # data: pd.DataFrame = session.run(ddb_expr)
-        data: Dict[str, List] = session.run(ddb_expr)
+        try:
+            data: Dict[str, List] = session.run(ddb_expr)
+        except Exception as e:
+            print(f"instruments:{instruments}")
+            print(f"db_name:{db_name},table_name:{table_name}")
+            print(f"start_time:{start_time},end_time:{end_time}")
+            print(f"expressions:{normalized_expr}")
+            print(f"baseFields:{base_fields}")
+            raise RuntimeError(f"DolphinDB 因子计算失败: {e}")
         try:
             data: Dict[str, pd.DataFrame] = {
                 k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
