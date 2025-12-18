@@ -83,6 +83,10 @@ test = [
 analysis = [
   "plotly",
 ]
+client = [
+  "python-socketio<6",
+  "tables",
+]
 
 [tool.setuptools]
 packages = [
