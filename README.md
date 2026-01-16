@@ -151,23 +151,64 @@ qdl:QlibDataLoader = QlibDataLoader(config=(alpha158_expression, alpha158_names)
 dataset:pd.DataFrame = qdl.load(instruments=codes, start_time="2021-01-01", end_time="2023-12-31")
 ```
 
-#### 4.1 使用D.ddb_features进行计算
+#### 4.2 使用DolphinDB表达式计算
 
-由于qlib.data.backend.ddb_qlib的设计是为了支持DolphinDB的表达式计算，所以可以直接使用`D.ddb_features`进行计算,对应的qlib.data.backend.ddb_qlib.ddb_scripts中写入了**WorldQuant 101 Alpha 因子指标**、**国泰君安 191 Alpha 指标**和**Alpha158因子指标**的表达式计算脚本,可以直接使用。
-其中WQAlpha1表示WorldQuant 101 Alpha 因子中的1号因子，gtjaAlpha1表示国泰君安 191 Alpha 中的1号因子，qlib158Alpha1表示Alpha158因子中的1号因子。
+Qlib-DDB 支持直接使用 DolphinDB 表达式进行因子计算。系统已在 `qlib.data.backend.ddb_qlib.ddb_scripts` 中预置了 **WorldQuant 101 Alpha 因子**、**国泰君安 191 Alpha 因子**和**Alpha158因子**的表达式计算脚本。
+
+使用 `D.features` 进行 DolphinDB 表达式计算：
+
 ```python
-D.ddb_feature(
+# 使用预置的 Alpha 因子表达式
+D.features(
     instruments=codes,
-    field=[
-        "WQAlpha1($close)",
-        "$high",
-        "gtjaAlpha1($open, $close, $volume)",
-        "qlib158Alpha1($open,$close)",
+    fields=[
+        "WQAlpha1($close)",           # WorldQuant 101 Alpha 因子 #1
+        "gtjaAlpha1($open, $close, $volume)",  # 国泰君安 191 Alpha 因子 #1
+        "qlib158Alpha1($open, $close)",        # Alpha158 因子 #1
+        "$high",                               # 基础字段
+        "Ref($S_DQ_ADJCLOSE, -2)/Ref($S_DQ_ADJCLOSE, -1) - 1",  # 自定义表达式
     ],
     start_time="2020-01-01",
     end_time="2023-12-31",
     freq="day",
 )
+```
+
+##### 预置因子说明：
+
+- **WorldQuant Alpha 因子**: `WQAlpha1` ~ `WQAlpha101` - 101个经典Alpha因子
+- **国泰君安 Alpha 因子**: `gtjaAlpha1` ~ `gtjaAlpha191` - 191个量化因子
+- **Alpha158 因子**: `qlib158Alpha1` ~ `qlib158Alpha158` - 158个机器学习因子
+
+#### 4.3 使用DolphinDBDataLoader
+
+对于更灵活的数据加载需求，可以使用 `DolphinDBDataLoader` 直接从 DolphinDB 数据库加载数据：
+
+```python
+from qlib.data.dataset.loader import DolphinDBDataLoader
+
+# 初始化 Qlib
+uri = "dolphindb://admin:123456@localhost:8848"
+qlib.init(database_uri=uri, region=REG_CN)
+
+# 创建 DolphinDB 数据加载器
+loader = DolphinDBDataLoader(
+    db_name="DailyBase",           # 数据库名
+    table_name="stockDerivative",  # 表名
+    config={
+        "fields": ["S_PQ_HIGH_52W_", "S_VAL_PE"],  # 要查询的字段
+        "datetime_colName": "TRADE_DT",              # 时间列名
+        "instruments_colName": "S_INFO_WINDCODE",     # 股票代码列名
+        "pivot": False,                               # 是否进行透视变换
+    },
+)
+
+# 加载数据
+data = loader.load(
+    start_time="2025-01-01",
+    end_time="2025-01-31",
+)
+print(data.head())
 ```
 ## 更多qlib模型可以加入星球
 ![image](https://github.com/hugo2046/qlib-ddb/raw/2230f4533b83268acdd29e4e2e472115a5083aa9/imgs/%E7%9F%A5%E8%AF%86%E6%98%9F%E7%90%83.jpg)

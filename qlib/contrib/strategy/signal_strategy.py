@@ -305,6 +305,278 @@ class TopkDropoutStrategy(BaseSignalStrategy):
             buy_order_list.append(buy_order)
         return TradeDecisionWO(sell_order_list + buy_order_list, self)
     
+    
+class BinarySignalStrategy(BaseSignalStrategy):
+    """二值信号策略 (0/1)
+    
+    该策略基于二值信号（0 或 1）进行交易：
+    - 当信号 = 1 时：开仓（买入股票并等权重配置）
+    - 当信号 = 0 时：平仓（卖出股票）
+    
+    适用于首次推荐、突破等二值信号场景。
+    
+    注意
+    ----
+    与 TopkDropoutStrategy 不同，该策略不限制持仓数量，
+    所有信号为 1 的股票都会被买入并等权重配置。
+    """
+    
+    def __init__(
+        self,
+        *,
+        topk=None,
+        n_drop=None,
+        method_sell="bottom",
+        method_buy="top",
+        hold_thresh=1,
+        only_tradable=False,
+        forbid_all_trade_at_limit=True,
+        **kwargs,
+    ):
+        """
+        Parameters
+        ----------
+        topk : int, optional
+            保留参数以保持与 TopkDropoutStrategy 接口一致，当前策略中未使用。
+            该策略会买入所有信号为 1 的股票，不限制数量。
+        n_drop : int, optional
+            保留参数以保持与 TopkDropoutStrategy 接口一致，当前策略中未使用。
+        method_sell : str, optional
+            保留参数以保持与 TopkDropoutStrategy 接口一致，当前策略中未使用。
+            默认值为 "bottom"。
+        method_buy : str, optional
+            保留参数以保持与 TopkDropoutStrategy 接口一致，当前策略中未使用。
+            默认值为 "top"。
+        hold_thresh : int
+            最短持有天数。
+            在卖出股票前，会检查 current.get_stock_count(order.stock_id) >= self.hold_thresh。
+        only_tradable : bool
+            买卖时是否只考虑可交易的股票。
+            
+            若为 True:
+                策略将根据股票的交易状态进行决策，避免买卖不可交易的股票。
+            
+            若为 False:
+                策略在决策时不会检查股票的交易状态。
+        forbid_all_trade_at_limit : bool
+            当价格达到涨跌停限制时，是否禁止所有交易。
+            
+            若为 True:
+                当价格达到涨跌停时，策略不会进行任何交易，
+                即使现实中允许在涨停时卖出或在跌停时买入。
+            
+            若为 False:
+                策略将在涨停时卖出，在跌停时买入。
+        **kwargs : dict
+            传递给父类 BaseSignalStrategy 的其他参数。
+        """
+        super().__init__(**kwargs)
+        # 兼容性参数（未使用）
+        self.topk = topk
+        self.n_drop = n_drop
+        self.method_sell = method_sell
+        self.method_buy = method_buy
+        # 实际使用的参数
+        self.hold_thresh = hold_thresh
+        self.only_tradable = only_tradable
+        self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
+
+    def _is_stock_tradable_with_direction(self, stock_id, direction, trade_start_time, trade_end_time):
+        """检查股票在指定方向上是否可交易
+        
+        Parameters
+        ----------
+        stock_id : str
+            股票代码
+        direction : OrderDir
+            交易方向（买入/卖出）
+        trade_start_time : pd.Timestamp
+            交易开始时间
+        trade_end_time : pd.Timestamp
+            交易结束时间
+        
+        Returns
+        -------
+        bool
+            若股票在给定条件下可交易则返回 True
+        """
+        direction_param = None if self.forbid_all_trade_at_limit else direction
+        return self.trade_exchange.is_stock_tradable(
+            stock_id=stock_id,
+            start_time=trade_start_time,
+            end_time=trade_end_time,
+            direction=direction_param,
+        )
+
+    def _create_order(self, stock_id, amount, direction, trade_start_time, trade_end_time):
+        """创建并验证交易订单
+        
+        Parameters
+        ----------
+        stock_id : str
+            股票代码
+        amount : float
+            交易数量
+        direction : OrderDir
+            交易方向
+        trade_start_time : pd.Timestamp
+            订单开始时间
+        trade_end_time : pd.Timestamp
+            订单结束时间
+        
+        Returns
+        -------
+        Order or None
+            验证通过的订单，若无效则返回 None
+        """
+        order = Order(
+            stock_id=stock_id,
+            amount=amount,
+            start_time=trade_start_time,
+            end_time=trade_end_time,
+            direction=direction,
+        )
+        return order if self.trade_exchange.check_order(order) else None
+
+    def generate_trade_decision(self, execute_result=None):
+        """生成交易决策
+        
+        该方法执行以下步骤：
+        1. 获取当前信号（0/1）
+        2. 将信号为 1 的股票设为目标持仓
+        3. 卖出当前持有但信号为 0 的股票
+        4. 买入信号为 1 的股票并等权重配置
+        
+        Parameters
+        ----------
+        execute_result : object, optional
+            上一次执行的结果，当前未使用
+        
+        Returns
+        -------
+        TradeDecisionWO
+            包含卖单和买单列表的交易决策对象
+        """
+        # 获取交易时间
+        trade_step = self.trade_calendar.get_trade_step()
+        trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
+        pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
+        
+        # 获取信号
+        pred_signal = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
+        
+        # 处理 DataFrame 格式的信号，只使用第一列
+        if isinstance(pred_signal, pd.DataFrame):
+            pred_signal = pred_signal.iloc[:, 0]
+        if pred_signal is None or pred_signal.empty:
+            return TradeDecisionWO([], self)
+        
+        # 过滤：只保留信号为 1 的股票，去除 NaN
+        pred_signal = pred_signal.dropna()
+        target_stocks = pred_signal[pred_signal == 1].index
+        
+        # 若需要考虑可交易性，过滤不可交易的股票
+        if self.only_tradable:
+            tradable_targets = []
+            for stock_id in target_stocks:
+                if self.trade_exchange.is_stock_tradable(
+                    stock_id=stock_id, 
+                    start_time=trade_start_time, 
+                    end_time=trade_end_time
+                ):
+                    tradable_targets.append(stock_id)
+            target_stocks = pd.Index(tradable_targets)
+        
+        # 获取当前持仓
+        current_position = self.trade_position
+        current_stock_list = current_position.get_stock_list()
+        
+        # 确定需要卖出的股票（当前持有但信号为 0）
+        sell_stocks = pd.Index(current_stock_list).difference(target_stocks)
+        
+        # 创建临时持仓用于模拟交易
+        current_temp = copy.deepcopy(current_position)
+        
+        # ===== 生成卖单 =====
+        sell_orders = []
+        time_per_step = self.trade_calendar.get_freq()
+        
+        for stock_id in sell_stocks:
+            # 检查是否可卖出
+            if not self._is_stock_tradable_with_direction(
+                stock_id, OrderDir.SELL, trade_start_time, trade_end_time
+            ):
+                continue
+            
+            # 检查持有天数
+            if current_temp.get_stock_count(stock_id, bar=time_per_step) < self.hold_thresh:
+                continue
+            
+            # 全部卖出
+            sell_amount = current_temp.get_stock_amount(code=stock_id)
+            sell_order = self._create_order(
+                stock_id, sell_amount, OrderDir.SELL, trade_start_time, trade_end_time
+            )
+            
+            if sell_order:
+                sell_orders.append(sell_order)
+                # 模拟成交以更新现金
+                self.trade_exchange.deal_order(sell_order, position=current_temp)
+        
+        # ===== 生成买单 =====
+        buy_orders = []
+        
+        # 若无目标股票，仅返回卖单
+        if len(target_stocks) == 0:
+            return TradeDecisionWO(sell_orders, self)
+        
+        # 计算每只股票的目标金额（等权重）
+        total_value = current_temp.get_cash() + current_temp.calculate_stock_value()
+        target_value_per_stock = total_value * self.risk_degree / len(target_stocks)
+        
+        # 对所有目标股票（包括已持有的）进行调仓
+        for stock_id in target_stocks:
+            current_amount = current_temp.get_stock_amount(stock_id)
+            
+            # 获取成交价
+            deal_price = self.trade_exchange.get_deal_price(
+                stock_id=stock_id, 
+                start_time=trade_start_time, 
+                end_time=trade_end_time, 
+                direction=OrderDir.BUY
+            )
+            if deal_price is None or deal_price <= 0:
+                continue
+            
+            # 计算目标持仓量
+            target_amount = self.trade_exchange.round_amount_by_trade_unit(
+                target_value_per_stock / deal_price, 
+                DEFAULT_TRADE_UNIT_FACTOR
+            )
+            
+            # 计算差额
+            amount_diff = target_amount - current_amount
+            
+            # 只有差额足够大才交易
+            if abs(amount_diff) > MIN_TRADE_AMOUNT_THRESHOLD:
+                direction = Order.BUY if amount_diff > 0 else Order.SELL
+                trade_direction = OrderDir.BUY if direction == Order.BUY else OrderDir.SELL
+                
+                # 检查可交易性
+                if not self._is_stock_tradable_with_direction(
+                    stock_id, trade_direction, trade_start_time, trade_end_time
+                ):
+                    continue
+                
+                # 创建订单
+                order = self._create_order(
+                    stock_id, abs(amount_diff), direction, trade_start_time, trade_end_time
+                )
+                if order:
+                    buy_orders.append(order)
+        
+        return TradeDecisionWO(sell_orders + buy_orders, self)
+    
 class TopkRebalanceStrategy(BaseSignalStrategy):
     """Top-K Rebalance Strategy
 

@@ -1,208 +1,220 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+'''
+Author: hugo2046 shen.lan123@gmail.com
+Date: 2026-01-16 16:57:25
+LastEditors: hugo2046 shen.lan123@gmail.com
+LastEditTime: 2026-01-17 00:33:37
+Description: pyecharts重构画图
+'''
+
 
 import math
 import importlib
-from typing import Iterable
-
+import numpy as np
 import pandas as pd
+from typing import Iterable, List
 
-import plotly.offline as py
-import plotly.graph_objs as go
+# 引入 Pyecharts 组件
+from pyecharts.charts import Line, Bar, HeatMap, Grid
+from pyecharts import options as opts
+from pyecharts.globals import ThemeType
 
-from plotly.subplots import make_subplots
-from plotly.figure_factory import create_distplot
 
 
 class BaseGraph:
     _name = None
 
     def __init__(
-        self, df: pd.DataFrame = None, layout: dict = None, graph_kwargs: dict = None, name_dict: dict = None, **kwargs
+        self, 
+        df: pd.DataFrame = None, 
+        layout: dict = None, 
+        graph_kwargs: dict = None, 
+        name_dict: dict = None, 
+        **kwargs
     ):
-        """
-
-        :param df:
-        :param layout:
-        :param graph_kwargs:
-        :param name_dict:
-        :param kwargs:
-            layout: dict
-                go.Layout parameters
-            graph_kwargs: dict
-                Graph parameters, eg: go.Bar(**graph_kwargs)
-        """
         self._df = df
-
         self._layout = dict() if layout is None else layout
         self._graph_kwargs = dict() if graph_kwargs is None else graph_kwargs
         self._name_dict = name_dict
 
-        self.data = None
+        self.chart = None
 
         self._init_parameters(**kwargs)
         self._init_data()
 
     def _init_data(self):
-        """
-
-        :return:
-        """
-        if self._df.empty:
-            raise ValueError("df is empty.")
-
-        self.data = self._get_data()
+        if self._df is None or self._df.empty:
+            pass
+        self._init_chart()
 
     def _init_parameters(self, **kwargs):
-        """
-
-        :param kwargs
-        """
-
-        # Instantiate graphics parameters
         self._graph_type = self._name.lower().capitalize()
-
-        # Displayed column name
-        if self._name_dict is None:
+        if self._name_dict is None and self._df is not None:
             self._name_dict = {_item: _item for _item in self._df.columns}
+
+    def _init_chart(self):
+        raise NotImplementedError
 
     @staticmethod
     def get_instance_with_graph_parameters(graph_type: str = None, **kwargs):
-        """
-
-        :param graph_type:
-        :param kwargs:
-        :return:
-        """
         try:
-            _graph_module = importlib.import_module("plotly.graph_objs")
-            _graph_class = getattr(_graph_module, graph_type)
-        except AttributeError:
-            _graph_module = importlib.import_module("qlib.contrib.report.graph")
-            _graph_class = getattr(_graph_module, graph_type)
+            if not graph_type.endswith("Graph"):
+                graph_class_name = f"{graph_type}Graph"
+            else:
+                graph_class_name = graph_type
+            
+            if graph_class_name in globals():
+                _graph_class = globals()[graph_class_name]
+            else:
+                _graph_module = importlib.import_module("qlib.contrib.report.graph")
+                _graph_class = getattr(_graph_module, graph_class_name)
+                
+        except (AttributeError, ImportError):
+            _graph_class = ScatterGraph
+            
         return _graph_class(**kwargs)
 
     @staticmethod
-    def show_graph_in_notebook(figure_list: Iterable[go.Figure] = None):
-        """
+    def show_graph_in_notebook(figure_list: Iterable = None):
+        for _chart in figure_list:
+            if hasattr(_chart, "render_notebook"):
+                try:
+                    from IPython.display import display
+                    display(_chart.render_notebook())
+                except ImportError:
+                    print("IPython not found, cannot render in notebook.")
 
-        :param figure_list:
-        :return:
-        """
-        py.init_notebook_mode()
-        for _fig in figure_list:
-            # NOTE: displays figures: https://plotly.com/python/renderers/
-            # default: plotly_mimetype+notebook
-            # support renderers: import plotly.io as pio; print(pio.renderers)
-            renderer = None
-            try:
-                # in notebook
-                _ipykernel = str(type(get_ipython()))
-                if "google.colab" in _ipykernel:
-                    renderer = "colab"
-            except NameError:
-                pass
+    def _apply_global_opts(self):
+        if not self.chart:
+            return
 
-            _fig.show(renderer=renderer)
-
-    def _get_layout(self) -> go.Layout:
-        """
-
-        :return:
-        """
-        return go.Layout(**self._layout)
-
-    def _get_data(self) -> list:
-        """
-
-        :return:
-        """
-
-        _data = [
-            self.get_instance_with_graph_parameters(
-                graph_type=self._graph_type, x=self._df.index, y=self._df[_col], name=_name, **self._graph_kwargs
-            )
-            for _col, _name in self._name_dict.items()
-        ]
-        return _data
+        self.chart.set_global_opts(
+            title_opts=opts.TitleOpts(title=self._layout.get("title", "")),
+            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross"),
+            xaxis_opts=opts.AxisOpts(type_="category", is_scale=True),
+            yaxis_opts=opts.AxisOpts(is_scale=True)
+        )
 
     @property
-    def figure(self) -> go.Figure:
-        """
-
-        :return:
-        """
-        _figure = go.Figure(data=self.data, layout=self._get_layout())
-        # NOTE: Use the default theme from plotly version 3.x, template=None
-        _figure["layout"].update(template=None)
-        return _figure
+    def figure(self):
+        self._apply_global_opts()
+        return self.chart
 
 
 class ScatterGraph(BaseGraph):
     _name = "scatter"
 
+    def _init_chart(self):
+        self.chart = Line()
+        x_data = self._df.index.astype(str).tolist()
+        self.chart.add_xaxis(x_data)
+
+        for col, name in self._name_dict.items():
+            # [Fix] 1. 后端数据缩放：*100
+            raw_data = self._df[col].tolist()
+            y_data = []
+            for x in raw_data:
+                if pd.isna(x):
+                    y_data.append(None)
+                else:
+                    y_data.append(round(x * 100, 2))
+            
+            # [Fix] 2. 系列名增加 (%) 后缀，这样 Tooltip 显示时会有单位
+            final_name = f"{name} (%)"
+
+            areastyle_opts = None
+            if self._graph_kwargs.get("fill") == "tozeroy":
+                areastyle_opts = opts.AreaStyleOpts(opacity=0.3)
+            
+            markarea_opts = self._graph_kwargs.get("markarea_opts", None)
+            mode = self._graph_kwargs.get("mode", "lines")
+            is_symbol_show = "markers" in mode
+            
+            self.chart.add_yaxis(
+                series_name=final_name,
+                y_axis=y_data,
+                is_symbol_show=is_symbol_show,
+                areastyle_opts=areastyle_opts,
+                markarea_opts=markarea_opts,
+                label_opts=opts.LabelOpts(is_show=False),
+                is_smooth=False,
+            )
+
 
 class BarGraph(BaseGraph):
     _name = "bar"
 
+    def _init_chart(self):
+        self.chart = Bar()
+        x_data = self._df.index.astype(str).tolist()
+        self.chart.add_xaxis(x_data)
+
+        for col, name in self._name_dict.items():
+            raw_data = self._df[col].tolist()
+            y_data = [x * 100 if not pd.isna(x) else None for x in raw_data]
+            final_name = f"{name} (%)"
+            
+            self.chart.add_yaxis(
+                series_name=final_name,
+                y_axis=y_data,
+                label_opts=opts.LabelOpts(is_show=False)
+            )
+
 
 class DistplotGraph(BaseGraph):
     _name = "distplot"
-
-    def _get_data(self):
-        """
-
-        :return:
-        """
+    def _init_chart(self):
+        self.chart = Bar()
         _t_df = self._df.dropna()
-        _data_list = [_t_df[_col] for _col in self._name_dict]
-        _label_list = list(self._name_dict.values())
-        _fig = create_distplot(_data_list, _label_list, show_rug=False, **self._graph_kwargs)
-
-        return _fig["data"]
+        for col, name in self._name_dict.items():
+            data = _t_df[col].values
+            hist, bin_edges = np.histogram(data, bins=50)
+            x_data = [f"{e:.2f}" for e in bin_edges[:-1]]
+            if not self.chart.options.get("xAxis"):
+                 self.chart.add_xaxis(x_data)
+            self.chart.add_yaxis(
+                series_name=name,
+                y_axis=hist.tolist(),
+                category_gap=0,
+                label_opts=opts.LabelOpts(is_show=False),
+                itemstyle_opts=opts.ItemStyleOpts(opacity=0.6)
+            )
 
 
 class HeatmapGraph(BaseGraph):
     _name = "heatmap"
-
-    def _get_data(self):
-        """
-
-        :return:
-        """
-        _data = [
-            self.get_instance_with_graph_parameters(
-                graph_type=self._graph_type,
-                x=self._df.columns,
-                y=self._df.index,
-                z=self._df.values.tolist(),
-                **self._graph_kwargs,
-            )
-        ]
-        return _data
+    def _init_chart(self):
+        self.chart = HeatMap()
+        x_axis = self._df.columns.tolist()
+        y_axis = self._df.index.astype(str).tolist()
+        self.chart.add_xaxis(x_axis)
+        self.chart.add_yaxis(
+            series_name="",
+            yaxis_data=y_axis,
+            value=[[i, j, float(self._df.iloc[j, i])] for i in range(len(x_axis)) for j in range(len(y_axis))],
+            label_opts=opts.LabelOpts(is_show=True, position="inside"),
+        )
+        self.chart.set_global_opts(visualmap_opts=opts.VisualMapOpts(is_show=True))
 
 
 class HistogramGraph(BaseGraph):
     _name = "histogram"
-
-    def _get_data(self):
-        """
-
-        :return:
-        """
-        _data = [
-            self.get_instance_with_graph_parameters(
-                graph_type=self._graph_type, x=self._df[_col], name=_name, **self._graph_kwargs
+    def _init_chart(self):
+        self.chart = Bar()
+        x_data = self._df.index.astype(str).tolist()
+        self.chart.add_xaxis(x_data)
+        for col, name in self._name_dict.items():
+            y_data = [x * 100 if not pd.isna(x) else None for x in self._df[col].tolist()]
+            self.chart.add_yaxis(
+                series_name=f"{name} (%)",
+                y_axis=y_data,
+                category_gap=0,
+                label_opts=opts.LabelOpts(is_show=False)
             )
-            for _col, _name in self._name_dict.items()
-        ]
-        return _data
-
 
 class SubplotsGraph:
-    """Create subplots same as df.plot(subplots=True)
-
-    Simple package for `plotly.tools.subplots`
+    """
+    类似于 df.plot(subplots=True) 的子图管理器
+    使用 Pyecharts Grid 实现
     """
 
     def __init__(
@@ -215,63 +227,9 @@ class SubplotsGraph:
         subplots_kwargs: dict = None,
         **kwargs,
     ):
-        """
-
-        :param df: pd.DataFrame
-
-        :param kind_map: dict, subplots graph kind and kwargs
-            eg: dict(kind='ScatterGraph', kwargs=dict())
-
-        :param layout: `go.Layout` parameters
-
-        :param sub_graph_layout: Layout of each graphic, similar to 'layout'
-
-        :param sub_graph_data: Instantiation parameters for each sub-graphic
-            eg: [(column_name, instance_parameters), ]
-
-            column_name: str or go.Figure
-
-            Instance_parameters:
-
-                - row: int, the row where the graph is located
-
-                - col: int, the col where the graph is located
-
-                - name: str, show name, default column_name in 'df'
-
-                - kind: str, graph kind, default `kind` param, eg: bar, scatter, ...
-
-                - graph_kwargs: dict, graph kwargs, default {}, used in `go.Bar(**graph_kwargs)`
-
-        :param subplots_kwargs: `plotly.tools.make_subplots` original parameters
-
-                - shared_xaxes: bool, default False
-
-                - shared_yaxes: bool, default False
-
-                - vertical_spacing: float, default 0.3 / rows
-
-                - subplot_titles: list, default []
-                    If `sub_graph_data` is None, will generate 'subplot_titles' according to `df.columns`,
-                    this field will be discarded
-
-
-                - specs: list, see `make_subplots` docs
-
-                - rows: int, Number of rows in the subplot grid, default 1
-                    If `sub_graph_data` is None, will generate 'rows' according to `df`, this field will be discarded
-
-                - cols: int, Number of cols in the subplot grid, default 1
-                    If `sub_graph_data` is None, will generate 'cols' according to `df`, this field will be discarded
-
-
-        :param kwargs:
-
-        """
-
         self._df = df
-        self._layout = layout
-        self._sub_graph_layout = sub_graph_layout
+        self._layout = layout or {}
+        self._sub_graph_layout = sub_graph_layout or {}
 
         self._kind_map = kind_map
         if self._kind_map is None:
@@ -281,25 +239,22 @@ class SubplotsGraph:
         if self._subplots_kwargs is None:
             self._init_subplots_kwargs()
 
-        self.__cols = self._subplots_kwargs.get("cols", 2)  # pylint: disable=W0238
-        self.__rows = self._subplots_kwargs.get(  # pylint: disable=W0238
-            "rows", math.ceil(len(self._df.columns) / self.__cols)
-        )
+        # 计算行列数
+        self.__cols = self._subplots_kwargs.get("cols", 1)
+        if "rows" in self._subplots_kwargs:
+            self.__rows = self._subplots_kwargs["rows"]
+        else:
+            self.__rows = math.ceil(len(self._df.columns) / self.__cols)
 
         self._sub_graph_data = sub_graph_data
         if self._sub_graph_data is None:
             self._init_sub_graph_data()
 
+        self._grid = None
         self._init_figure()
 
     def _init_sub_graph_data(self):
-        """
-
-        :return:
-        """
         self._sub_graph_data = []
-        self._subplot_titles = []
-
         for i, column_name in enumerate(self._df.columns):
             row = math.ceil((i + 1) / self.__cols)
             _temp = (i + 1) % self.__cols
@@ -316,69 +271,168 @@ class SubplotsGraph:
                 ),
             )
             self._sub_graph_data.append(_temp_row_data)
-            self._subplot_titles.append(res_name)
 
     def _init_subplots_kwargs(self):
-        """
-
-        :return:
-        """
-        # Default cols, rows
-        _cols = 2
-        _rows = math.ceil(len(self._df.columns) / 2)
+        _cols = 1
+        _rows = len(self._df.columns)
         self._subplots_kwargs = dict()
         self._subplots_kwargs["rows"] = _rows
         self._subplots_kwargs["cols"] = _cols
-        self._subplots_kwargs["shared_xaxes"] = False
-        self._subplots_kwargs["shared_yaxes"] = False
-        self._subplots_kwargs["vertical_spacing"] = 0.3 / _rows
-        self._subplots_kwargs["print_grid"] = False
-        self._subplots_kwargs["subplot_titles"] = self._df.columns.tolist()
+        self._subplots_kwargs["shared_xaxes"] = True
+        self._subplots_kwargs["vertical_spacing"] = 0.05
+        self._subplots_kwargs["row_width"] = [1] * _rows
 
     def _init_figure(self):
-        """
+        canvas_height = self._layout.get("height", 1000)
+        canvas_width = self._layout.get("width", "100%")
+        if isinstance(canvas_width, int): canvas_width = f"{canvas_width}px"
+        if isinstance(canvas_height, int): canvas_height = f"{canvas_height}px"
 
-        :return:
-        """
-        self._figure = make_subplots(**self._subplots_kwargs)
+        self._grid = Grid(
+            init_opts=opts.InitOpts(
+                width=canvas_width, 
+                height=canvas_height,
+                theme=ThemeType.WHITE
+            )
+        )
 
+        row_width_list = self._subplots_kwargs.get("row_width", [1] * self.__rows)
+        if len(row_width_list) < self.__rows:
+             row_width_list = [1] * (self.__rows - len(row_width_list)) + row_width_list
+        
+        row_weights = list(reversed(row_width_list))
+        total_weight = sum(row_weights)
+        vertical_spacing = self._subplots_kwargs.get("vertical_spacing", 0.02)
+        
+        margin_top_pct = 5
+        margin_bottom_pct = 5
+        spacing_pct = vertical_spacing * 100
+        available_height_pct = 100 - margin_top_pct - margin_bottom_pct - (self.__rows - 1) * spacing_pct
+        
+        row_configs = {}
+        current_pos = margin_top_pct
+        
+        for i, weight in enumerate(row_weights):
+            row_idx = i + 1
+            h_pct = (weight / total_weight) * available_height_pct
+            row_configs[row_idx] = {
+                "pos_top": f"{current_pos}%",
+                "height": f"{h_pct}%"
+            }
+            current_pos += h_pct + spacing_pct
+
+        cell_groups = {}
         for column_name, column_map in self._sub_graph_data:
-            if isinstance(column_name, go.Figure):
-                _graph_obj = column_name
-            elif isinstance(column_name, str):
-                temp_name = column_map.get("name", column_name.replace("_", " "))
-                kind = column_map.get("kind", self._kind_map.get("kind", "ScatterGraph"))
-                _graph_kwargs = column_map.get("graph_kwargs", self._kind_map.get("kwargs", {}))
-                _graph_obj = BaseGraph.get_instance_with_graph_parameters(
-                    kind,
-                    **dict(
-                        df=self._df.loc[:, [column_name]],
-                        name_dict={column_name: temp_name},
-                        graph_kwargs=_graph_kwargs,
-                    ),
-                )
-            else:
-                raise TypeError()
-
+            if not isinstance(column_name, str): continue
             row = column_map["row"]
-            col = column_map["col"]
+            col = column_map.get("col", 1)
+            key = (row, col)
+            if key not in cell_groups: cell_groups[key] = []
+            cell_groups[key].append((column_name, column_map))
 
-            _graph_data = getattr(_graph_obj, "data")
-            # for _item in _graph_data:
-            #     _item.pop('xaxis', None)
-            #     _item.pop('yaxis', None)
+        shared_xaxes = self._subplots_kwargs.get("shared_xaxes", False)
+        x_axis_data = self._df.index.astype(str).tolist()
 
-            for _g_obj in _graph_data:
-                self._figure.add_trace(_g_obj, row=row, col=col)
+        for (row, col), items in cell_groups.items():
+            first_item_map = items[0][1]
+            kind = first_item_map.get("kind", self._kind_map.get("kind", "ScatterGraph"))
+            
+            chart = Bar() if "Bar" in kind else Line()
+            chart.add_xaxis(x_axis_data)
+            
+            for col_name, col_map in items:
+                series_name = col_map.get("name", col_name.replace("_", " "))
+                
+                # [Fix] 1. 后端数据处理：乘100
+                raw_data = self._df[col_name].tolist()
+                y_data = []
+                for x in raw_data:
+                    if pd.isna(x):
+                        y_data.append(None)
+                    else:
+                        y_data.append(round(x * 100, 2))
+                
+                # [Fix] 2. 修改 Series Name，让 Tooltip 自带单位
+                # 这样 Tooltip 会显示 "cum_return (%): 15.23"
+                final_series_name = f"{series_name} (%)"
 
-        if self._sub_graph_layout is not None:
-            for k, v in self._sub_graph_layout.items():
-                self._figure["layout"][k].update(v)
+                final_kwargs = self._kind_map.get("kwargs", {}).copy()
+                final_kwargs.update(col_map.get("graph_kwargs", {}))
+                
+                areastyle_opts = None
+                if final_kwargs.get("fill") == "tozeroy":
+                    areastyle_opts = opts.AreaStyleOpts(opacity=0.3)
+                
+                mode = final_kwargs.get("mode", "lines")
+                is_symbol_show = "markers" in mode
+                markarea_opts = final_kwargs.get("markarea_opts", None)
+                
+                chart.add_yaxis(
+                    series_name=final_series_name,
+                    y_axis=y_data,
+                    is_symbol_show=is_symbol_show,
+                    areastyle_opts=areastyle_opts,
+                    markarea_opts=markarea_opts,
+                    label_opts=opts.LabelOpts(is_show=False),
+                    is_smooth=False,
+                )
 
-        # NOTE: Use the default theme from plotly version 3.x: template=None
-        self._figure["layout"].update(template=None)
-        self._figure["layout"].update(self._layout)
+            layout_cfg = row_configs.get(row, {"pos_top": "50%", "height": "50%"})
+            is_last_row = (row == self.__rows)
+            xaxis_show_label = True
+            if shared_xaxes and not is_last_row:
+                xaxis_show_label = False
+            
+            legend_pos_top = layout_cfg["pos_top"]
+            
+            chart.set_global_opts(
+                title_opts=opts.TitleOpts(
+                    title=self._layout.get("title", "") if row == 1 else "",
+                    pos_left="center"
+                ),
+                legend_opts=opts.LegendOpts(
+                    is_show=True, 
+                    pos_top=legend_pos_top, 
+                    pos_left="6%",
+                    orient="horizontal",
+                    item_gap=15,
+                    textstyle_opts=opts.TextStyleOpts(font_size=11)
+                ),
+                # [Fix] 3. 移除 JS Formatter，回归原生
+                tooltip_opts=opts.TooltipOpts(
+                    trigger="axis", 
+                    axis_pointer_type="line",
+                    background_color="rgba(255, 255, 255, 0.9)",
+                    border_width=1
+                ),
+                xaxis_opts=opts.AxisOpts(
+                    type_="category",
+                    boundary_gap=False,
+                    axislabel_opts=opts.LabelOpts(is_show=xaxis_show_label),
+                    axistick_opts=opts.AxisTickOpts(is_show=xaxis_show_label),
+                ),
+                yaxis_opts=opts.AxisOpts(
+                    is_scale=True,
+                    # [Fix] 4. Y 轴使用纯字符串模板 (无需 JS)
+                    # {value} 会自动替换为数值，" %" 是纯文本
+                    axislabel_opts=opts.LabelOpts(formatter="{value} %"),
+                    splitline_opts=opts.SplitLineOpts(
+                        is_show=True, 
+                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed")
+                    )
+                )
+            )
+
+            self._grid.add(
+                chart,
+                grid_opts=opts.GridOpts(
+                    pos_left="5%",
+                    pos_right="5%",
+                    pos_top=layout_cfg["pos_top"],
+                    height=layout_cfg["height"]
+                )
+            )
 
     @property
     def figure(self):
-        return self._figure
+        return self._grid

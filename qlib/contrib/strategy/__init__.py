@@ -2,7 +2,7 @@
 Author: Hugo
 Date: 2025-02-18 11:26:04
 LastEditors: shen.lan123@gmail.com
-LastEditTime: 2025-11-03 21:23:24
+LastEditTime: 2025-12-17 15:21:33
 Description: 
 '''
 # Copyright (c) Microsoft Corporation.
@@ -14,6 +14,7 @@ from .signal_strategy import (
     TopkRebalanceStrategy,
     WeightStrategyBase,
     EnhancedIndexingStrategy,
+    BinarySignalStrategy,
 )
 
 from .rule_strategy import (
@@ -34,4 +35,5 @@ __all__ = [
     "SBBStrategyBase",
     "SBBStrategyEMA",
     "SoftTopkStrategy",
+    "BinarySignalStrategy"
 ]

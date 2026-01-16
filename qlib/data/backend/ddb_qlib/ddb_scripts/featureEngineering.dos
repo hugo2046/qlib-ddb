@@ -2,7 +2,7 @@
 * @Author: Hugo
 * @Date: 2024-12-05 10:45:18
  * @LastEditors: shen.lan123@gmail.com
- * @LastEditTime: 2025-12-02 16:59:30
+ * @LastEditTime: 2025-12-04 13:36:05
 * @Description: 查询相关函数
 */
 
@@ -311,13 +311,7 @@ def splitDateRangesByTradeDays(start_date, end_date, exchange="XSHG", daysStep=2
 //     offset_end_date = temporalAdd(end_time,1,`SSE);
 //     tb = loadTable("dfs://"+db_path,table_name);
 //     return repartitionDS(<select date,code,_$$baseFields from tb>,column_name,RANGE,[start_time,offset_end_date]);
-//     // tradeDays = getMarketCalendar("XSHG",start_time, end_time);
-//     // tb = loadTable("dfs://"+db_path,table_name);
-//     // stepRng = groups(bar(tradeDays, 180d)).keys()
-//     // beginDt = 
-//     // stepRng.append!([start_time,offset_date])
-//     // stepRng.sort!();
-//     // return repartitionDS(<select * from tb>, column_name,RANGE,stepRng);
+
 // };
 
 
@@ -500,20 +494,18 @@ def splitDateRangesByTradeDays(start_date, end_date, exchange="XSHG", daysStep=2
 * 创建空表
 * @return TABLE 空表
 */
-def createEmptyTable(colNames){
+def createEmptyTable(codes,dates,colNames){
     
-    colTypes = array(STRING,0,size(colNames));
-    for (col in colNames){
-        if(col==`date){
-            colTypes.append!("DATE");
-        }else if(col==`code){
-            colTypes.append!("SYMBOL");
-        }else{
-            colTypes.append!("DOUBLE");
-        };
-    };
-
-    return table(100:0,colNames,colTypes);
+    totalSize = size(codes)*size(dates);
+    code = take(codes, totalSize);
+    code.sortBy!(false)
+    date = repeat(dates, totalSize);
+    emptyTB = table(date,code);
+    for (colName in colNames){
+        emptyTB[colName] = 0;
+    }
+    reorderColumns!(emptyTB,colNames)
+    return emptyTB;
 };
 
 // 根据频率规范化日期类型
@@ -524,6 +516,8 @@ def normalizeDate(dt,freq){
         return datetime(dt);
     };
 }
+
+
 
 // FeatureEnginer("QlibFeaturesDay", "Features","000852.SH","close\move(close,1)-1","close",2017.01.01, 2025.11.24)
 class FeatureEngine{
@@ -572,6 +566,12 @@ class FeatureEngine{
         };
     };
 
+    def getDSDateRange(ds){
+        dsDateRng = select min(date) as start_dt,max(date) as end_dt from ds;
+        dates = getMarketCalendar("XSHG",dsDateRng['start_dt'][0],dsDateRng['end_dt'][0]);
+        return dates;
+    };
+
     /**
     * 构建用于 select 的列表达式：
     * - 固定包含 `date 与 `code
@@ -606,7 +606,7 @@ class FeatureEngine{
         return canRunWithAvailableMemory(normalizeDate(startTime,freq),normalizeDate(endTime,freq),toListInstruments(),fields,dbName,tableName);
     };
 
-    // 创建按日期分区的数据源
+    // FIXME:创建按日期分区的数据源,关闭了内存大小预估，分区并未生效
     def createDSByDate(daysStep=252,dateName=`date,exchange=`XSHG){
         // 边界日期偏移一个交易日
         boundEndDate = temporalAdd(endTime,1,`SSE);
@@ -616,15 +616,18 @@ class FeatureEngine{
             fields = baseFields;
         };
 
-        if(isRunWithAvailableMemory()){
-            // 当前内存可用处理
-            // print("当前内存充足，使用单次查询模式");
-            return repartitionDS(<select date,code,_$$fields from tb>,dateName,RANGE,[startTime,boundEndDate]);
-        }else{
-            // print("当前内存不足，使用分段查询模式");
-            bounds = splitDateRangesByTradeDays(startTime,endTime, "XSHG", daysStep);
-            return repartitionDS(<select date,code,_$$fields from tb>, dateName,RANGE,bounds);
-        };
+        // if(isRunWithAvailableMemory()){
+        //     // 当前内存可用处理
+        //     // print("当前内存充足，使用单次查询模式");
+        //     // return repartitionDS(<select date,code,_$$fields from tb>,dateName,RANGE,[startTime,boundEndDate]);
+        //     return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
+        // }else{
+        //     // print("当前内存不足，使用分段查询模式");
+        //     bounds = splitDateRangesByTradeDays(startTime,endTime, "XSHG", daysStep);
+        //     // return repartitionDS(<select date,code,_$$fields from tb>, dateName,RANGE,bounds);
+        //     return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
+        // };
+        return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
     };
 
     // 标准化expressions为字典格式
@@ -680,12 +683,12 @@ class FeatureEngine{
             // 检查结果是否为空
             if(baseData.rows() == 0) {
                 print("警告: 基础数据获取失败,请检查表达式引用字段: " + fieldExpr);
-                return createEmptyTable(`date`code+keys(expressionsDict));
+                return createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
             };
 
         } catch(ex){
             print("错误:表达式中含有未知基础字段.请检查: " + ex);
-            return createEmptyTable(`date`code+keys(expressionsDict));
+            return createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
         };
         
         // 生成数据字典
@@ -710,7 +713,7 @@ class FeatureEngine{
                 // 检查结果是否为矩阵
                 if(res.rows()==0){
                     print("警告: 计算结果为空，请检查表达式: " + expression);
-                    continue;
+                    res = createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
                 };
                 
                 result_dict[expressionsDict[expression]] = res;
@@ -718,11 +721,12 @@ class FeatureEngine{
             } catch(ex){
                 // ex[1]为错误信息，避免误用ex.msg属性
                 print("【特征计算失败】表达式: " + expression + " | 错误: " + ex[1]);
-                placeholder = table(10:0,[`date,`code,expressionsDict[expression]], [DATE, SYMBOL, DOUBLE]);
+                placeholder = createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
                 result_dict[expressionsDict[expression]] = placeholder;
             };
         
         };
+        
 
         return result_dict;
 
@@ -736,9 +740,9 @@ class FeatureEngine{
 };
 
 
-// engine = FeatureEngine("QlibFeaturesDay", "Features",["000852.SH","000300.SH"],"close\\move(close,1)-1",["close"],2017.01.01, 2025.11.24)
-// res = engine.fetch();
-// print(res)
+// // engine = FeatureEngine("QlibFeaturesDay", "Features",["000852.SH","000300.SH"],"close\\move(close,1)-1",["close"],2017.01.01, 2025.11.24)
+// // res = engine.fetch();
+// // print(res)
 
 
 def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name){

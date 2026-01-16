@@ -4,8 +4,6 @@ from functools import partial
 
 import pandas as pd
 
-import plotly.graph_objs as go
-
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
@@ -14,23 +12,16 @@ from scipy import stats
 from typing import Sequence
 from qlib.typehint import Literal
 
-from ..graph import ScatterGraph, SubplotsGraph, BarGraph, HeatmapGraph
+from ..pyecharts_graph import (
+    ScatterPyechartsGraph, SubplotsPyechartsGraph, BarPyechartsGraph,
+    HeatmapPyechartsGraph, HistogramPyechartsGraph, LinePyechartsGraph, show_graph_in_notebook
+)
 from ..utils import guess_plotly_rangebreaks
 
-# 导入pyecharts版本以支持兼容性
-try:
-    from ..pyecharts_graph import (
-        ScatterPyechartsGraph, SubplotsPyechartsGraph, BarPyechartsGraph,
-        HeatmapPyechartsGraph, HistogramPyechartsGraph, show_graph_in_notebook
-    )
-    from .analysis_model_performance_pyecharts import model_performance_graph_pyecharts
-    PYECHARTS_AVAILABLE = True
-except ImportError:
-    PYECHARTS_AVAILABLE = False
 
-
-def _group_return(pred_label: pd.DataFrame = None, reverse: bool = False, N: int = 5, **kwargs) -> tuple:
+def _group_return_pyecharts(pred_label: pd.DataFrame = None, reverse: bool = False, N: int = 5, **kwargs) -> tuple:
     """
+    使用pyecharts绘制分组收益图
 
     :param pred_label:
     :param reverse:
@@ -64,73 +55,92 @@ def _group_return(pred_label: pd.DataFrame = None, reverse: bool = False, N: int
     t_df["long-average"] = t_df["Group1"] - pred_label.groupby(level="datetime")["label"].mean()
 
     t_df = t_df.dropna(how="all")  # for days which does not contain label
+
     # Cumulative Return By Group
-    group_scatter_figure = ScatterGraph(
-        t_df.cumsum(),
-        layout=dict(
-            title="Cumulative Return",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(t_df.index))),
-        ),
-    ).figure
+    t_df_cumsum = t_df.cumsum()
+    group_scatter_figure = ScatterPyechartsGraph(
+        t_df_cumsum,
+        title="Cumulative Return",
+        width="1000px",
+        height="600px"
+    ).chart
 
     t_df = t_df.loc[:, ["long-short", "long-average"]]
     _bin_size = float(((t_df.max() - t_df.min()) / 20).min())
-    group_hist_figure = SubplotsGraph(
+
+    # 创建子图 - 使用直方图替代分布图
+    group_hist_figure = SubplotsPyechartsGraph(
         t_df,
-        kind_map=dict(kind="DistplotGraph", kwargs=dict(bin_size=_bin_size)),
-        subplots_kwargs=dict(
-            rows=1,
-            cols=2,
-            print_grid=False,
-            subplot_titles=["long-short", "long-average"],
-        ),
-    ).figure
+        kind_map=dict(kind="HistogramPyechartsGraph", kwargs=dict(bin_size=_bin_size)),
+        title="Distribution Analysis",
+        width="1000px",
+        height="500px",
+        rows=1,
+        cols=2,
+        subplot_titles=["long-short", "long-average"]
+    )
 
     return group_scatter_figure, group_hist_figure
 
 
-def _plot_qq(data: pd.Series = None, dist=stats.norm) -> go.Figure:
+def _plot_qq_pyecharts(data: pd.Series = None, dist=stats.norm):
     """
+    使用pyecharts绘制Q-Q图
 
     :param data:
     :param dist:
     :return:
     """
-    # NOTE: plotly.tools.mpl_to_plotly not actively maintained, resulting in errors in the new version of matplotlib,
-    # ref: https://github.com/plotly/plotly.py/issues/2913#issuecomment-730071567
-    # removing plotly.tools.mpl_to_plotly for greater compatibility with matplotlib versions
+    # 使用statsmodels生成Q-Q图数据
     _plt_fig = sm.qqplot(data.dropna(), dist=dist, fit=True, line="45")
     plt.close(_plt_fig)
     qqplot_data = _plt_fig.gca().lines
-    fig = go.Figure()
 
-    fig.add_trace(
-        {
-            "type": "scatter",
-            "x": qqplot_data[0].get_xdata(),
-            "y": qqplot_data[0].get_ydata(),
-            "mode": "markers",
-            "marker": {"color": "#19d3f3"},
-        }
+    # 准备数据
+    theoretical_quantiles = qqplot_data[0].get_xdata()
+    sample_quantiles = qqplot_data[0].get_ydata()
+    line_x = qqplot_data[1].get_xdata()
+    line_y = qqplot_data[1].get_ydata()
+
+    # 确保所有数组长度一致
+    min_length = min(len(theoretical_quantiles), len(sample_quantiles), len(line_x), len(line_y))
+
+    # 创建DataFrame用于绘图
+    qq_df = pd.DataFrame({
+        'Theoretical': theoretical_quantiles[:min_length],
+        'Sample': sample_quantiles[:min_length],
+        'Line_x': line_x[:min_length],
+        'Line_y': line_y[:min_length]
+    })
+
+    from ..pyecharts_graph import LinePyechartsGraph, ScatterPyechartsGraph
+
+    # 创建散点图
+    scatter_chart = ScatterPyechartsGraph(
+        qq_df[['Theoretical', 'Sample']],
+        title="Q-Q Plot",
+        width="600px",
+        height="500px"
+    ).chart
+
+    # 添加参考线
+    scatter_chart.add_xaxis(qq_df['Line_x'].tolist())
+    scatter_chart.add_yaxis(
+        series_name="Reference Line",
+        y_axis=qq_df['Line_y'].tolist(),
+        symbol_size=1,
+        color="#636efa"
     )
 
-    fig.add_trace(
-        {
-            "type": "scatter",
-            "x": qqplot_data[1].get_xdata(),
-            "y": qqplot_data[1].get_ydata(),
-            "mode": "lines",
-            "line": {"color": "#636efa"},
-        }
-    )
     del qqplot_data
-    return fig
+    return scatter_chart
 
 
-def _pred_ic(
+def _pred_ic_pyecharts(
     pred_label: pd.DataFrame = None, methods: Sequence[Literal["IC", "Rank IC"]] = ("IC", "Rank IC"), **kwargs
 ) -> tuple:
     """
+    使用pyecharts绘制预测IC分析图
 
     :param pred_label: pd.DataFrame
     must contain one column of realized return with name `label` and one column of predicted score names `score`.
@@ -179,16 +189,17 @@ def _pred_ic(
 
     _monthly_ic = _monthly_ic.reindex(fill_index)
 
-    ic_bar_figure = ic_figure(ic_df, kwargs.get("show_nature_day", False))
+    ic_bar_figure = ic_figure_pyecharts(ic_df, kwargs.get("show_nature_day", False))
 
-    ic_heatmap_figure = HeatmapGraph(
+    ic_heatmap_figure = HeatmapPyechartsGraph(
         _monthly_ic.unstack(),
-        layout=dict(title="Monthly IC", xaxis=dict(dtick=1), yaxis=dict(tickformat="04d", dtick=1)),
-        graph_kwargs=dict(xtype="array", ytype="array"),
-    ).figure
+        title="Monthly IC",
+        width="800px",
+        height="600px"
+    ).chart
 
     dist = stats.norm
-    _qqplot_fig = _plot_qq(_ic, dist)
+    _qqplot_fig = _plot_qq_pyecharts(_ic, dist)
 
     if isinstance(dist, stats.norm.__class__):
         dist_name = "Normal"
@@ -197,54 +208,39 @@ def _pred_ic(
 
     _ic_df = _ic.to_frame("IC")
     _bin_size = ((_ic_df.max() - _ic_df.min()) / 20).min()
-    _sub_graph_data = [
-        (
-            "IC",
-            dict(
-                row=1,
-                col=1,
-                name="",
-                kind="DistplotGraph",
-                graph_kwargs=dict(bin_size=_bin_size),
-            ),
-        ),
-        (_qqplot_fig, dict(row=1, col=2)),
-    ]
-    ic_hist_figure = SubplotsGraph(
+
+    # 创建包含直方图和Q-Q图的页面
+    ic_hist_figure = SubplotsPyechartsGraph(
         _ic_df.dropna(),
-        kind_map=dict(kind="HistogramGraph", kwargs=dict()),
-        subplots_kwargs=dict(
-            rows=1,
-            cols=2,
-            print_grid=False,
-            subplot_titles=["IC", "IC %s Dist. Q-Q" % dist_name],
-        ),
-        sub_graph_data=_sub_graph_data,
-        layout=dict(
-            yaxis2=dict(title="Observed Quantile"),
-            xaxis2=dict(title=f"{dist_name} Distribution Quantile"),
-        ),
-    ).figure
+        kind_map=dict(kind="HistogramPyechartsGraph", kwargs=dict(bin_size=_bin_size)),
+        title="IC Distribution Analysis",
+        width="1200px",
+        height="500px",
+        rows=1,
+        cols=2,
+        subplot_titles=["IC", f"IC {dist_name} Dist. Q-Q"]
+    )
 
-    return ic_bar_figure, ic_heatmap_figure, ic_hist_figure
+    return ic_bar_figure, ic_heatmap_figure, ic_hist_figure, _qqplot_fig
 
 
-def _pred_autocorr(pred_label: pd.DataFrame, lag=1, **kwargs) -> tuple:
+def _pred_autocorr_pyecharts(pred_label: pd.DataFrame, lag=1, **kwargs) -> tuple:
+    """使用pyecharts绘制预测自相关图"""
     pred = pred_label.copy()
     pred["score_last"] = pred.groupby(level="instrument")["score"].shift(lag)
     ac = pred.groupby(level="datetime").apply(lambda x: x["score"].rank(pct=True).corr(x["score_last"].rank(pct=True)))
     _df = ac.to_frame("value")
-    ac_figure = ScatterGraph(
+    ac_figure = LinePyechartsGraph(
         _df,
-        layout=dict(
-            title="Auto Correlation",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(_df.index))),
-        ),
-    ).figure
+        title="Auto Correlation",
+        width="1000px",
+        height="500px"
+    ).chart
     return (ac_figure,)
 
 
-def _pred_turnover(pred_label: pd.DataFrame, N=5, lag=1, **kwargs) -> tuple:
+def _pred_turnover_pyecharts(pred_label: pd.DataFrame, N=5, lag=1, **kwargs) -> tuple:
+    """使用pyecharts绘制换手率图"""
     pred = pred_label.copy()
     pred["score_last"] = pred.groupby(level="instrument")["score"].shift(lag)
     top = pred.groupby(level="datetime").apply(
@@ -265,39 +261,30 @@ def _pred_turnover(pred_label: pd.DataFrame, N=5, lag=1, **kwargs) -> tuple:
             "Bottom": bottom,
         }
     )
-    turnover_figure = ScatterGraph(
+    turnover_figure = LinePyechartsGraph(
         r_df,
-        layout=dict(
-            title="Top-Bottom Turnover",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(r_df.index))),
-        ),
-    ).figure
+        title="Top-Bottom Turnover",
+        width="1000px",
+        height="500px"
+    ).chart
     return (turnover_figure,)
 
 
-def ic_figure(ic_df: pd.DataFrame, show_nature_day=True, **kwargs) -> go.Figure:
-    r"""IC figure
-
-    :param ic_df: ic DataFrame
-    :param show_nature_day: whether to display the abscissa of non-trading day
-    :param \*\*kwargs: contains some parameters to control plot style in plotly. Currently, supports
-       - `rangebreaks`: https://plotly.com/python/time-series/#Hiding-Weekends-and-Holidays
-    :return: plotly.graph_objs.Figure
-    """
+def ic_figure_pyecharts(ic_df: pd.DataFrame, show_nature_day=True, **kwargs):
+    """使用pyecharts绘制IC柱状图"""
     if show_nature_day:
         date_index = pd.date_range(ic_df.index.min(), ic_df.index.max())
         ic_df = ic_df.reindex(date_index)
-    ic_bar_figure = BarGraph(
+    ic_bar_figure = BarPyechartsGraph(
         ic_df,
-        layout=dict(
-            title="Information Coefficient (IC)",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(ic_df.index))),
-        ),
-    ).figure
+        title="Information Coefficient (IC)",
+        width="1000px",
+        height="500px"
+    ).chart
     return ic_bar_figure
 
 
-def model_performance_graph(
+def model_performance_graph_pyecharts(
     pred_label: pd.DataFrame,
     lag: int = 1,
     N: int = 5,
@@ -306,14 +293,13 @@ def model_performance_graph(
     graph_names: list = ["group_return", "pred_ic", "pred_autocorr"],
     show_notebook: bool = True,
     show_nature_day: bool = False,
-    use_pyecharts: bool = False,
     **kwargs,
 ) -> [list, tuple]:
-    r"""Model performance
+    """
+    使用pyecharts绘制模型性能图
 
     :param pred_label: index is **pd.MultiIndex**, index name is **[instrument, datetime]**; columns names is **[score, label]**.
            It is usually same as the label of model training(e.g. "Ref($close, -2)/Ref($close, -1) - 1").
-
 
             .. code-block:: python
 
@@ -324,42 +310,34 @@ def model_performance_graph(
                                 2017-12-14  0.012440        0.012440
                                 2017-12-15  -0.102778       -0.102778
 
-
     :param lag: `pred.groupby(level='instrument')['score'].shift(lag)`. It will be only used in the auto-correlation computing.
     :param N: group number, default 5.
     :param reverse: if `True`, `pred['score'] *= -1`.
     :param rank: if **True**, calculate rank ic.
-    :param graph_names: graph names; default ['cumulative_return', 'pred_ic', 'pred_autocorr', 'pred_turnover'].
+    :param graph_names: graph names; default ['group_return', 'pred_ic', 'pred_autocorr', 'pred_turnover'].
     :param show_notebook: whether to display graphics in notebook, the default is `True`.
     :param show_nature_day: whether to display the abscissa of non-trading day.
-    :param use_pyecharts: whether to use pyecharts for plotting (requires pyecharts to be installed), default False.
-    :param \*\*kwargs: contains some parameters to control plot style in plotly. Currently, supports
-       - `rangebreaks`: https://plotly.com/python/time-series/#Hiding-Weekends-and-Holidays
-    :return: if show_notebook is True, display in notebook; else return `plotly.graph_objs.Figure` list or pyecharts chart list.
+    :param **kwargs: contains some parameters to control plot style.
+    :return: if show_notebook is True, display in notebook; else return pyecharts chart list.
     """
-    # 如果指定使用pyecharts且可用，则使用pyecharts版本
-    if use_pyecharts and PYECHARTS_AVAILABLE:
-        return model_performance_graph_pyecharts(
-            pred_label=pred_label,
-            lag=lag,
-            N=N,
-            reverse=reverse,
-            rank=rank,
-            graph_names=graph_names,
-            show_notebook=show_notebook,
-            show_nature_day=show_nature_day,
-            **kwargs
-        )
-
-    # 否则使用原有的plotly版本
     figure_list = []
+
+    # 映射函数名到pyecharts版本
+    function_mapping = {
+        "group_return": _group_return_pyecharts,
+        "pred_ic": _pred_ic_pyecharts,
+        "pred_autocorr": _pred_autocorr_pyecharts,
+        "pred_turnover": _pred_turnover_pyecharts,
+    }
+
     for graph_name in graph_names:
-        fun_res = eval(f"_{graph_name}")(
-            pred_label=pred_label, lag=lag, N=N, reverse=reverse, rank=rank, show_nature_day=show_nature_day, **kwargs
-        )
-        figure_list += fun_res
+        if graph_name in function_mapping:
+            fun_res = function_mapping[graph_name](
+                pred_label=pred_label, lag=lag, N=N, reverse=reverse, rank=rank, show_nature_day=show_nature_day, **kwargs
+            )
+            figure_list += fun_res
 
     if show_notebook:
-        BarGraph.show_graph_in_notebook(figure_list)
+        show_graph_in_notebook(figure_list)
     else:
         return figure_list

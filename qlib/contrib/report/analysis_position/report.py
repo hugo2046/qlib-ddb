@@ -1,17 +1,20 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
+'''
+Author: hugo2046 shen.lan123@gmail.com
+Date: 2026-01-17 00:35:10
+LastEditors: hugo2046 shen.lan123@gmail.com
+LastEditTime: 2026-01-17 00:36:34
+Description: pyecharts重构
+'''
 import pandas as pd
+from pyecharts import options as opts
 
+# 引入我们在 Step 2 和 Step 3 重构的 graph 模块
 from ..graph import SubplotsGraph, BaseGraph
 
 
 def _calculate_maximum(df: pd.DataFrame, is_ex: bool = False):
     """
-
-    :param df:
-    :param is_ex:
-    :return:
+    计算最大回撤区间 (保持原有逻辑不变)
     """
     if is_ex:
         end_date = df["cum_ex_return_wo_cost_mdd"].idxmin()
@@ -24,21 +27,17 @@ def _calculate_maximum(df: pd.DataFrame, is_ex: bool = False):
 
 def _calculate_mdd(series):
     """
-    Calculate mdd
-
-    :param series:
-    :return:
+    计算回撤序列 (保持原有逻辑不变)
     """
     return series - series.cummax()
 
 
 def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-
-    :param df:
-    :return:
+    准备绘图数据 (保持原有逻辑不变)
     """
     index_names = df.index.names
+    # 格式化日期索引以便于显示
     df.index = df.index.strftime("%Y-%m-%d")
 
     report_df = pd.DataFrame()
@@ -46,7 +45,7 @@ def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
     report_df["cum_bench"] = df["bench"].cumsum()
     report_df["cum_return_wo_cost"] = df["return"].cumsum()
     report_df["cum_return_w_cost"] = (df["return"] - df["cost"]).cumsum()
-    # report_df['cum_return'] - report_df['cum_return'].cummax()
+    
     report_df["return_wo_mdd"] = _calculate_mdd(report_df["cum_return_wo_cost"])
     report_df["return_w_cost_mdd"] = _calculate_mdd((df["return"] - df["cost"]).cumsum())
 
@@ -54,7 +53,6 @@ def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
     report_df["cum_ex_return_w_cost"] = (df["return"] - df["bench"] - df["cost"]).cumsum()
     report_df["cum_ex_return_wo_cost_mdd"] = _calculate_mdd((df["return"] - df["bench"]).cumsum())
     report_df["cum_ex_return_w_cost_mdd"] = _calculate_mdd((df["return"] - df["cost"] - df["bench"]).cumsum())
-    # return_wo_mdd , return_w_cost_mdd,  cum_ex_return_wo_cost_mdd, cum_ex_return_w
 
     report_df["turnover"] = df["turnover"]
     report_df.sort_index(ascending=True, inplace=True)
@@ -63,17 +61,9 @@ def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
     return report_df
 
 
-def _report_figure(df: pd.DataFrame) -> [list, tuple]:
-    """
-
-    :param df:
-    :return:
-    """
-
-    # Get data
+def _report_figure(df: pd.DataFrame) -> list:
+    # 1. 获取并处理数据
     report_df = _calculate_report_data(df)
-
-    # Maximum Drawdown
     max_start_date, max_end_date = _calculate_maximum(report_df)
     ex_max_start_date, ex_max_end_date = _calculate_maximum(report_df, True)
 
@@ -81,165 +71,101 @@ def _report_figure(df: pd.DataFrame) -> [list, tuple]:
     _temp_df = report_df.reset_index()
     _temp_df.loc[-1] = 0
     _temp_df = _temp_df.shift(1)
-    _temp_df.loc[0, index_name] = "T0"
+    _temp_df.loc[0, index_name] = "Start" 
     _temp_df.set_index(index_name, inplace=True)
     _temp_df.iloc[0] = 0
     report_df = _temp_df
 
-    # Create figure
+    # 2. 构造 MarkArea (最大回撤阴影)
+    mark_area_items = []
+    if max_start_date and max_end_date:
+        mark_area_items.append(
+            opts.MarkAreaItem(
+                name="Max Drawdown",
+                x=(str(max_start_date), str(max_end_date)),
+                itemstyle_opts=opts.ItemStyleOpts(color="#d3d3d3", opacity=0.3)
+            )
+        )
+    # 也可以加上超额收益回撤 (如果需要在特定图上显示不同颜色，需分开定义，这里统一显示绝对回撤)
+    # 如果你想把两种回撤都画在所有图上，可能会有点乱。通常 "最大回撤" 指的是绝对收益的回撤。
+    
+    markarea_opts = opts.MarkAreaOpts(data=mark_area_items, is_silent=True)
+
+    # 3. 定义图表配置
     _default_kind_map = dict(kind="ScatterGraph", kwargs={"mode": "lines+markers"})
     _temp_fill_args = {"fill": "tozeroy", "mode": "lines+markers"}
-    _column_row_col_dict = [
+    
+    # 原始配置列表
+    raw_config = [
         ("cum_bench", dict(row=1, col=1)),
         ("cum_return_wo_cost", dict(row=1, col=1)),
         ("cum_return_w_cost", dict(row=1, col=1)),
+        
         ("return_wo_mdd", dict(row=2, col=1, graph_kwargs=_temp_fill_args)),
         ("return_w_cost_mdd", dict(row=3, col=1, graph_kwargs=_temp_fill_args)),
+        
         ("cum_ex_return_wo_cost", dict(row=4, col=1)),
         ("cum_ex_return_w_cost", dict(row=4, col=1)),
+        
         ("turnover", dict(row=5, col=1)),
+        
         ("cum_ex_return_w_cost_mdd", dict(row=6, col=1, graph_kwargs=_temp_fill_args)),
         ("cum_ex_return_wo_cost_mdd", dict(row=7, col=1, graph_kwargs=_temp_fill_args)),
     ]
 
-    _subplot_layout = dict()
-    for i in range(1, 8):
-        # yaxis
-        _subplot_layout.update({"yaxis{}".format(i): dict(zeroline=True, showline=True, showticklabels=True)})
-        _show_line = i == 7
-        _subplot_layout.update({"xaxis{}".format(i): dict(showline=_show_line, type="category", tickangle=45)})
+    # --- 关键修改：为每一行注入 markarea_opts ---
+    _column_row_col_dict = []
+    
+    # 记录哪些行已经添加过阴影了 (避免一行多列时重复添加)
+    rows_with_markarea = set()
+
+    for col_name, config in raw_config:
+        row = config['row']
+        
+        # 获取或初始化 graph_kwargs
+        if 'graph_kwargs' not in config:
+            config['graph_kwargs'] = {}
+            
+        # 如果这一行还没加过 markarea，则加到当前的列配置中
+        if row not in rows_with_markarea:
+            # 浅拷贝 graph_kwargs 避免影响其他共用 _temp_fill_args 的项
+            new_kwargs = config['graph_kwargs'].copy()
+            new_kwargs['markarea_opts'] = markarea_opts
+            config['graph_kwargs'] = new_kwargs
+            rows_with_markarea.add(row)
+        else:
+            # 必须确保 graph_kwargs 也是独立的，防止引用污染
+            config['graph_kwargs'] = config['graph_kwargs'].copy()
+            
+        _column_row_col_dict.append((col_name, config))
+
 
     _layout_style = dict(
-        height=1200,
-        title=" ",
-        shapes=[
-            {
-                "type": "rect",
-                "xref": "x",
-                "yref": "paper",
-                "x0": max_start_date,
-                "y0": 0.55,
-                "x1": max_end_date,
-                "y1": 1,
-                "fillcolor": "#d3d3d3",
-                "opacity": 0.3,
-                "line": {
-                    "width": 0,
-                },
-            },
-            {
-                "type": "rect",
-                "xref": "x",
-                "yref": "paper",
-                "x0": ex_max_start_date,
-                "y0": 0,
-                "x1": ex_max_end_date,
-                "y1": 0.55,
-                "fillcolor": "#d3d3d3",
-                "opacity": 0.3,
-                "line": {
-                    "width": 0,
-                },
-            },
-        ],
+        height=1200, 
+        width="100%",
+        title="Backtest Analysis Report",
     )
 
     _subplot_kwargs = dict(
-        shared_xaxes=True,
-        vertical_spacing=0.01,
         rows=7,
         cols=1,
-        row_width=[1, 1, 1, 3, 1, 1, 3],
-        print_grid=False,
+        row_width=[1, 1, 1, 3, 1, 1, 3], # Bottom-to-Top
+        vertical_spacing=0.01,
+        shared_xaxes=True,
     )
-    figure = SubplotsGraph(
+
+    grid = SubplotsGraph(
         df=report_df,
         layout=_layout_style,
         sub_graph_data=_column_row_col_dict,
         subplots_kwargs=_subplot_kwargs,
         kind_map=_default_kind_map,
-        sub_graph_layout=_subplot_layout,
     ).figure
-    return (figure,)
+    
+    return [grid]
 
 
-def report_graph(report_df: pd.DataFrame, show_notebook: bool = True) -> [list, tuple]:
-    """display backtest report
-
-        Example:
-
-
-            .. code-block:: python
-
-                import qlib
-                import pandas as pd
-                from qlib.utils.time import Freq
-                from qlib.utils import flatten_dict
-                from qlib.backtest import backtest, executor
-                from qlib.contrib.evaluate import risk_analysis
-                from qlib.contrib.strategy import TopkDropoutStrategy
-
-                # init qlib
-                qlib.init(provider_uri=<qlib data dir>)
-
-                CSI300_BENCH = "SH000300"
-                FREQ = "day"
-                STRATEGY_CONFIG = {
-                    "topk": 50,
-                    "n_drop": 5,
-                    # pred_score, pd.Series
-                    "signal": pred_score,
-                }
-
-                EXECUTOR_CONFIG = {
-                    "time_per_step": "day",
-                    "generate_portfolio_metrics": True,
-                }
-
-                backtest_config = {
-                    "start_time": "2017-01-01",
-                    "end_time": "2020-08-01",
-                    "account": 100000000,
-                    "benchmark": CSI300_BENCH,
-                    "exchange_kwargs": {
-                        "freq": FREQ,
-                        "limit_threshold": 0.095,
-                        "deal_price": "close",
-                        "open_cost": 0.0005,
-                        "close_cost": 0.0015,
-                        "min_cost": 5,
-                    },
-                }
-
-                # strategy object
-                strategy_obj = TopkDropoutStrategy(**STRATEGY_CONFIG)
-                # executor object
-                executor_obj = executor.SimulatorExecutor(**EXECUTOR_CONFIG)
-                # backtest
-                portfolio_metric_dict, indicator_dict = backtest(executor=executor_obj, strategy=strategy_obj, **backtest_config)
-                analysis_freq = "{0}{1}".format(*Freq.parse(FREQ))
-                # backtest info
-                report_normal_df, positions_normal = portfolio_metric_dict.get(analysis_freq)
-
-                qcr.analysis_position.report_graph(report_normal_df)
-
-    :param report_df: **df.index.name** must be **date**, **df.columns** must contain **return**, **turnover**, **cost**, **bench**.
-
-
-            .. code-block:: python
-
-                            return      cost        bench       turnover
-                date
-                2017-01-04  0.003421    0.000864    0.011693    0.576325
-                2017-01-05  0.000508    0.000447    0.000721    0.227882
-                2017-01-06  -0.003321   0.000212    -0.004322   0.102765
-                2017-01-09  0.006753    0.000212    0.006874    0.105864
-                2017-01-10  -0.000416   0.000440    -0.003350   0.208396
-
-
-    :param show_notebook: whether to display graphics in notebook, the default is **True**.
-    :return: if show_notebook is True, display in notebook; else return **plotly.graph_objs.Figure** list.
-    """
+def report_graph(report_df: pd.DataFrame, show_notebook: bool = True) -> list:
     report_df = report_df.copy()
     fig_list = _report_figure(report_df)
     if show_notebook:
