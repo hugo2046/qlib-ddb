@@ -11,6 +11,7 @@ import logging
 import platform
 import subprocess
 from .log import get_module_logger
+from .data.backend.utils import mask_uri
 
 
 # init qlib
@@ -90,7 +91,8 @@ def init(default_conf="client", **kwargs):
     for _freq, provider_uri in C.dpm.provider_uri.items():
         uri_type = C.dpm.get_uri_type(provider_uri)
         if uri_type == "database":
-            data_path[_freq] = f"DolphinDB({provider_uri})"
+            # 使用脱敏后的 URI 用于日志输出
+            data_path[_freq] = f"DolphinDB({mask_uri(provider_uri)})"
         else:
             data_path[_freq] = C.dpm.get_data_uri(_freq)
     logger.info(f"data_path={data_path}")
