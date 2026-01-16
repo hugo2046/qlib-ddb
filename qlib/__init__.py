@@ -88,11 +88,16 @@ def init(default_conf="client", **kwargs):
     
     # 根据不同的 URI 类型显示不同的信息
     data_path = {}
+
+    # 读取脱敏配置，默认启用
+    mask_enabled = C.get("log_mask_sensitive", True)
+
     for _freq, provider_uri in C.dpm.provider_uri.items():
         uri_type = C.dpm.get_uri_type(provider_uri)
         if uri_type == "database":
-            # 使用脱敏后的 URI 用于日志输出
-            data_path[_freq] = f"DolphinDB({mask_uri(provider_uri)})"
+            # 根据配置决定是否脱敏
+            display_uri = mask_uri(provider_uri) if mask_enabled else provider_uri
+            data_path[_freq] = f"DolphinDB({display_uri})"
         else:
             data_path[_freq] = C.dpm.get_data_uri(_freq)
     logger.info(f"data_path={data_path}")

@@ -157,6 +157,8 @@ _default_config = {
     "logging_level": logging.INFO,
     # Global configuration of qlib log
     # logging_level can control the logging level more finely
+    # 是否在日志中脱敏敏感信息（如数据库密码）
+    "log_mask_sensitive": True,
     "logging_config": {
         "version": 1,
         "formatters": {
