@@ -2,6 +2,102 @@ Changelog
 =========
 Here you can see the full list of changes between each QLib release.
 
+Version 0.9.1 (Unreleased)
+---------------------------
+
+**2026-01-17 - Report 模块 Pyecharts 重构**
+
+背景: 原有 report 模块使用 plotly 进行可视化,存在以下问题:
+- 中文字体支持不佳
+- 交互性有限
+- 在 Jupyter Notebook 中显示效果不理想
+
+变更内容:
+
+1. **新增 Pyecharts 重构版本**:
+   - ``qlib/contrib/report/graph.py`` - 使用 pyecharts 重构的核心图表类
+     - ``BaseGraph`` - 基础图表类
+     - ``SubplotsGraph`` - 子图布局
+     - ``LineGraph``, ``BarGraph``, ``HeatmapGraph`` - 各类图表
+   - ``qlib/contrib/report/analysis_position/report.py`` - pyecharts 版本的投资组合报告
+     - ``generate_report_dataframe()`` - 生成投资组合报告
+   - ``qlib/contrib/report/analysis_model/analysis_model_performance_pyecharts.py`` - pyecharts 版本的模型性能分析
+
+2. **保留原有 Plotly 版本** (作为备份):
+   - ``qlib/contrib/report/graph_bak.py`` - 原有的 plotly 图表类
+   - ``qlib/contrib/report/analysis_position/report_bak.py`` - 原有的 plotly 投资组合报告
+
+3. **兼容性支持**:
+   - ``qlib/contrib/report/analysis_model/analysis_model_performance.py`` - 同时支持 plotly 和 pyecharts
+
+重构优势:
+- ✅ 更好的中文字体支持
+- ✅ 更丰富的交互性
+- ✅ 更好的 Jupyter Notebook 集成
+- ✅ 更美观的默认样式
+- ✅ 保持向后兼容
+
+使用示例:
+
+.. code-block:: python
+
+    # 使用新的 pyecharts 版本 (推荐)
+    from qlib.contrib.report.analysis_position import report
+
+    # 生成 pyecharts 图表
+    report.generate_report_dataframe(
+        report_normal_df,
+        indicator_analysis_df,
+        show_notebook=True  # 在 notebook 中直接显示
+    )
+
+    # 使用原有的 plotly 版本(如果需要)
+    from qlib.contrib.report.analysis_position import report_bak
+
+    # 生成 plotly 图表
+    report_bak.generate_report_dataframe(
+        report_normal_df,
+        indicator_analysis_df
+    )
+
+相关文档:
+- ``qlib/contrib/report/README_risk_analysis_pyecharts.md`` - Pyecharts 风险分析使用文档
+
+测试覆盖:
+- ``tests/test_pyecharts_graph.py`` - Pyecharts 图表单元测试
+- ``tests/test_risk_analysis_pyecharts.py`` - Pyecharts 风险分析测试
+
+技术细节:
+- 使用 pyecharts 2.0.6+
+- 支持主题定制 (ThemeType)
+- 支持导出为 HTML 文件
+- 完全兼容原有接口设计
+
+**2026-01-17 - URI 脱敏标准化**
+
+问题: 原有 URI 脱敏实现同时脱敏用户名和密码,与行业标准不一致
+
+修复:
+- 移除用户名脱敏,保持用户名可见 (符合 SQLAlchemy 标准)
+- 将密码脱敏从 ``*****`` 改为 ``***`` (与 SQLAlchemy 一致)
+
+变更前:
+``dolphindb://axxxn:*****@172.17.0.1:8848``
+
+变更后:
+``dolphindb://admin:***@172.17.0.1:8848``
+
+原因:
+1. SQLAlchemy、psycopg2 等主流库仅脱敏密码
+2. 用户名通常不是敏感信息,保持可见便于调试
+3. 统一行业标准,减少用户困惑
+
+影响文件:
+- ``qlib/data/backend/utils.py:mask_uri()``
+- ``tests/test_backend_utils.py``
+- ``tests/test_config_masking.py``
+- ``tests/test_integration_uri_masking.py``
+
 Version 0.1.0
 -------------
 This is the initial release of QLib library.
