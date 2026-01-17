@@ -36,7 +36,7 @@ def test_init_logs_masked_uri(caplog):
         # 如果日志包含 data_path，验证密码已脱敏
         if "data_path" in log_message:
             assert "admin:123456" not in log_message, f"发现明文密码在日志中: {log_message}"
-            assert "admin" not in log_message or "axxn" in log_message, f"用户名未脱敏: {log_message}"
+            assert "admin:***" in log_message, f"密码未正确脱敏: {log_message}"
             print(f"✓ 日志安全: {log_message}")
 
 

@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**目标:** 在日志中自动脱敏数据库连接 URI 中的用户名和密码，防止敏感信息泄露
+**目标:** 在日志中自动脱敏数据库连接 URI 中的密码，防止敏感信息泄露
 
-**架构:** 创建独立的 URI 脱敏工具函数，在日志输出时调用，不影响实际的数据库连接逻辑。采用正则表达式解析 URI，保留调试所需信息（协议、主机、端口）的同时脱敏凭据。
+**架构:** 创建独立的 URI 脱敏工具函数，在日志输出时调用，不影响实际的数据库连接逻辑。采用正则表达式解析 URI，遵循 SQLAlchemy 行业标准（仅脱敏密码，保留用户名、主机、端口以便调试）。
 
 **技术栈:** Python 3.8+, 正则表达式 (re), pytest
 
@@ -21,7 +21,7 @@ data_path={'__DEFAULT_FREQ': 'DolphinDB(dolphindb://admin:123456@172.17.0.1:8848
 这导致明文密码被记录到日志文件中，存在安全风险。参考 SQLAlchemy 等业界标准的做法，应该将敏感信息脱敏：
 
 ```
-data_path={'__DEFAULT_FREQ': 'DolphinDB(dolphindb://axxn:xxxxx@172.17.0.1:8848)'}
+data_path={'__DEFAULT_FREQ': 'DolphinDB(dolphindb://admin:***@172.17.0.1:8848)'}
 ```
 
 ---

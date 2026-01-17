@@ -9,14 +9,20 @@ from qlib.config import REG_CN
 
 
 def test_masking_enabled_by_default():
-    """测试默认启用脱敏"""
+    """测试默认启用脱敏（遵循行业标准：仅脱敏密码）"""
     from qlib.data.backend.utils import mask_uri
 
     uri = "dolphindb://admin:123456@host:8848"
     masked = mask_uri(uri)
 
+    # 验证明文密码不存在
     assert "admin:123456" not in masked
-    assert "axxxn:*****" in masked
+
+    # 验证用户名保持可见（行业标准）
+    assert "admin:***" in masked
+
+    # 验证密码已脱敏为 ***
+    assert ":***@" in masked
 
 
 def test_can_disable_masking_via_config():
