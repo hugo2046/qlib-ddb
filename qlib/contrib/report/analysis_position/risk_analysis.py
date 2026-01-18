@@ -1,11 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from typing import Iterable
+from typing import Iterable, Any
 
 import pandas as pd
-
-import plotly.graph_objs as py
 
 from ...evaluate import risk_analysis
 
@@ -107,7 +105,7 @@ def _get_monthly_analysis_with_feature(monthly_df: pd.DataFrame, feature: str = 
     return _temp_df
 
 
-def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[py.Figure]:
+def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
     """Get analysis graph figure
 
     :param analysis_df:
@@ -116,15 +114,30 @@ def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[py.Figure]:
     if analysis_df is None:
         return []
 
+    # _figure = SubplotsGraph(
+    #     _get_all_risk_analysis(analysis_df),
+    #     kind_map=dict(kind="BarGraph", kwargs={}),
+    #     subplots_kwargs={"rows": 1, "cols": 4},
+    # ).figure
+
+    # use echarts
     _figure = SubplotsGraph(
         _get_all_risk_analysis(analysis_df),
-        kind_map=dict(kind="BarGraph", kwargs={}),
-        subplots_kwargs={"rows": 1, "cols": 4},
+        kind_map=dict(kind="BarGraph", kwargs={
+            "xy_reverse": False,            # 纵向
+            "is_show_label": False,         # 隐藏数据标签
+            "is_show_legend": False,        # [Fix] 隐藏图例
+            "axis_formatter": "{value} %",  # Y轴显示 %
+            "is_transform_to_percent": True # 数据乘以 100
+            # "bar_max_width": None         # 不限制宽度，让柱子变粗
+        }),
+        subplots_kwargs={"rows": 4, "cols": 1, "row_width": [1]*4},
+        layout={"height": 1000} 
     ).figure
     return (_figure,)
 
 
-def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterable[py.Figure]:
+def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterable[Any]:
     """Get analysis monthly graph figure
 
     :param report_normal_df:
@@ -162,7 +175,7 @@ def risk_analysis_graph(
     report_normal_df: pd.DataFrame = None,
     report_long_short_df: pd.DataFrame = None,
     show_notebook: bool = True,
-) -> Iterable[py.Figure]:
+) -> Iterable[Any]:
     """Generate analysis graph and monthly analysis
 
         Example:

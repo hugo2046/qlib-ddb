@@ -363,7 +363,7 @@ class SubplotsGraph:
             row = column_map["row"]
             col = column_map["col"]
 
-            _graph_data = getattr(_graph_obj, "data")
+            _graph_data = getattr(_graph_obj.figure, "data")
             # for _item in _graph_data:
             #     _item.pop('xaxis', None)
             #     _item.pop('yaxis', None)

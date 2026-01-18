@@ -1,365 +1,239 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-from functools import partial
+'''
+Author: hugo2046 shen.lan123@gmail.com
+Date: 2026-01-18 15:30:02
+LastEditors: hugo2046 shen.lan123@gmail.com
+LastEditTime: 2026-01-18 16:00:05
+Description: 使用pyecharts重构模型表现分析图表
+'''
 
 import pandas as pd
-
-import plotly.graph_objs as go
-
-import statsmodels.api as sm
-import matplotlib.pyplot as plt
-
+import numpy as np
 from scipy import stats
+from typing import List, Union
 
-from typing import Sequence
-from qlib.typehint import Literal
+# 引入 Pyecharts 组件
+from pyecharts.charts import Line, Bar, Grid
+from pyecharts import options as opts
 
-from ..graph import ScatterGraph, SubplotsGraph, BarGraph, HeatmapGraph
-from ..utils import guess_plotly_rangebreaks
+# 引入我们封装好的 graph 组件 (请确保 graph.py 路径正确)
+from qlib.contrib.report.graph import SubplotsGraph, ScatterGraph, BarGraph, DistplotGraph
 
-# 导入pyecharts版本以支持兼容性
-try:
-    from ..pyecharts_graph import (
-        ScatterPyechartsGraph, SubplotsPyechartsGraph, BarPyechartsGraph,
-        HeatmapPyechartsGraph, HistogramPyechartsGraph, show_graph_in_notebook
+# ==============================================================================
+# 私有辅助函数 (子组件重构)
+# 这些函数负责具体的绘图逻辑，被主函数调用
+# ==============================================================================
+
+def _plot_qq(score: pd.Series, show_notebook: bool = True) -> object:
+    """
+    绘制 QQ 图 (Quantile-Quantile Plot)
+    """
+    # 1. 计算 QQ 数据
+    (osm, osr), (slope, intercept, r) = stats.probplot(score, dist="norm")
+    
+    # 2. 构造数据
+    df_qq = pd.DataFrame({"Sample Quantiles": osr}, index=osm)
+    # 添加参考线
+    df_qq["Reference Line"] = df_qq.index * slope + intercept
+    
+    # 3. 绘图
+    # 技巧：通过 layout 强制指定 X 轴为数值轴
+    graph = ScatterGraph(
+        df=df_qq,
+        layout={
+            "title": "Normal Q-Q Plot",
+            "width": "100%",
+            "height": 500,
+            "xaxis": {"type": "value", "title": "Theoretical Quantiles"},
+            "yaxis": {"title": "Sample Quantiles"}
+        },
+        graph_kwargs={
+            "mode": "lines",  # 用线模式模拟密集点
+            "is_symbol_show": False
+        }
     )
-    from .analysis_model_performance_pyecharts import model_performance_graph_pyecharts
-    PYECHARTS_AVAILABLE = True
-except ImportError:
-    PYECHARTS_AVAILABLE = False
+    
+    if show_notebook:
+        ScatterGraph.show_graph_in_notebook([graph.figure])
+    return graph.figure
 
 
-def _group_return(pred_label: pd.DataFrame = None, reverse: bool = False, N: int = 5, **kwargs) -> tuple:
+def _group_return(
+    pred_label: pd.DataFrame, 
+    N: int = 5, 
+    reverse: bool = False, 
+    show_notebook: bool = True
+) -> object:
     """
-
-    :param pred_label:
-    :param reverse:
-    :param N:
-    :return:
+    绘制分组累计收益图
     """
+    df = pred_label.copy()
     if reverse:
-        pred_label["score"] *= -1
+        df["score"] *= -1
 
-    pred_label = pred_label.sort_values("score", ascending=False)
+    # 1. 分箱
+    def get_group(x):
+        try:
+            return pd.qcut(x, N, labels=False, duplicates='drop')
+        except ValueError:
+            return np.nan
 
-    # Group1 ~ Group5 only consider the dropna values
-    pred_label_drop = pred_label.dropna(subset=["score"])
+    df["group"] = df.groupby("datetime")["score"].transform(get_group)
+    
+    # 2. 计算各组收益 (单利累加)
+    group_ret = df.groupby(["datetime", "group"])["label"].mean().unstack()
+    group_cum_ret = group_ret.cumsum()
+    group_cum_ret.columns = [f"Group{i+1}" for i in range(len(group_cum_ret.columns))]
+    
+    # 3. 计算多空收益 (Long-Short)
+    if not group_cum_ret.empty:
+        group_cum_ret["Long-Short"] = group_cum_ret.iloc[:, -1] - group_cum_ret.iloc[:, 0]
 
-    # Group
-    t_df = pd.DataFrame(
-        {
-            "Group%d"
-            % (i + 1): pred_label_drop.groupby(level="datetime")["label"].apply(
-                lambda x: x[len(x) // N * i : len(x) // N * (i + 1)].mean()  # pylint: disable=W0640
-            )
-            for i in range(N)
-        }
+    # 4. 绘图
+    graph = ScatterGraph(
+        df=group_cum_ret,
+        layout={
+            "title": "Cumulative Return of Groups",
+            "width": "100%",
+            "height": 500,
+            "xaxis": {"title": "Date"},
+            "yaxis": {"title": "Cumulative Return (Simple Interest)"}
+        },
+        graph_kwargs={"mode": "lines"}
     )
-    t_df.index = pd.to_datetime(t_df.index)
-
-    # Long-Short
-    t_df["long-short"] = t_df["Group1"] - t_df["Group%d" % N]
-
-    # Long-Average
-    t_df["long-average"] = t_df["Group1"] - pred_label.groupby(level="datetime")["label"].mean()
-
-    t_df = t_df.dropna(how="all")  # for days which does not contain label
-    # Cumulative Return By Group
-    group_scatter_figure = ScatterGraph(
-        t_df.cumsum(),
-        layout=dict(
-            title="Cumulative Return",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(t_df.index))),
-        ),
-    ).figure
-
-    t_df = t_df.loc[:, ["long-short", "long-average"]]
-    _bin_size = float(((t_df.max() - t_df.min()) / 20).min())
-    group_hist_figure = SubplotsGraph(
-        t_df,
-        kind_map=dict(kind="DistplotGraph", kwargs=dict(bin_size=_bin_size)),
-        subplots_kwargs=dict(
-            rows=1,
-            cols=2,
-            print_grid=False,
-            subplot_titles=["long-short", "long-average"],
-        ),
-    ).figure
-
-    return group_scatter_figure, group_hist_figure
-
-
-def _plot_qq(data: pd.Series = None, dist=stats.norm) -> go.Figure:
-    """
-
-    :param data:
-    :param dist:
-    :return:
-    """
-    # NOTE: plotly.tools.mpl_to_plotly not actively maintained, resulting in errors in the new version of matplotlib,
-    # ref: https://github.com/plotly/plotly.py/issues/2913#issuecomment-730071567
-    # removing plotly.tools.mpl_to_plotly for greater compatibility with matplotlib versions
-    _plt_fig = sm.qqplot(data.dropna(), dist=dist, fit=True, line="45")
-    plt.close(_plt_fig)
-    qqplot_data = _plt_fig.gca().lines
-    fig = go.Figure()
-
-    fig.add_trace(
-        {
-            "type": "scatter",
-            "x": qqplot_data[0].get_xdata(),
-            "y": qqplot_data[0].get_ydata(),
-            "mode": "markers",
-            "marker": {"color": "#19d3f3"},
-        }
-    )
-
-    fig.add_trace(
-        {
-            "type": "scatter",
-            "x": qqplot_data[1].get_xdata(),
-            "y": qqplot_data[1].get_ydata(),
-            "mode": "lines",
-            "line": {"color": "#636efa"},
-        }
-    )
-    del qqplot_data
-    return fig
+    
+    if show_notebook:
+        ScatterGraph.show_graph_in_notebook([graph.figure])
+    return graph.figure
 
 
 def _pred_ic(
-    pred_label: pd.DataFrame = None, methods: Sequence[Literal["IC", "Rank IC"]] = ("IC", "Rank IC"), **kwargs
-) -> tuple:
+    pred_label: pd.DataFrame, 
+    rank: bool = False, 
+    show_notebook: bool = True
+) -> List[object]:
     """
-
-    :param pred_label: pd.DataFrame
-    must contain one column of realized return with name `label` and one column of predicted score names `score`.
-    :param methods: Sequence[Literal["IC", "Rank IC"]]
-    IC series to plot.
-    IC is sectional pearson correlation between label and score
-    Rank IC is the spearman correlation between label and score
-    For the Monthly IC, IC histogram, IC Q-Q plot.  Only the first type of IC will be plotted.
-    :return:
+    绘制 IC 分析图 (时序图 + 分布图)
     """
-    _methods_mapping = {"IC": "pearson", "Rank IC": "spearman"}
+    # 1. 计算每日 IC
+    def calc_ic(x):
+        if rank:
+            return x["score"].rank().corr(x["label"].rank())
+        else:
+            return x["score"].corr(x["label"])
 
-    def _corr_series(x, method):
-        return x["label"].corr(x["score"], method=method)
-
-    ic_df = pd.concat(
-        [
-            pred_label.groupby(level="datetime").apply(partial(_corr_series, method=_methods_mapping[m])).rename(m)
-            for m in methods
-        ],
-        axis=1,
+    daily_ic = pred_label.groupby("datetime").apply(calc_ic)
+    
+    # 2. 准备数据
+    df_ic_ts = pd.DataFrame({
+        "Daily IC": daily_ic,
+        "IC MA20": daily_ic.rolling(20).mean()
+    })
+    
+    # 3. 绘图
+    # 图A: IC 时序
+    graph_ts = ScatterGraph(
+        df=df_ic_ts,
+        layout={"title": "IC Series", "width": "100%", "height": 400},
+        graph_kwargs={"mode": "lines"}
     )
-    _ic = ic_df.iloc(axis=1)[0]
-
-    _index = _ic.index.get_level_values(0).astype("str").str.replace("-", "").str.slice(0, 6)
-    _monthly_ic = _ic.groupby(_index).mean()
-    _monthly_ic.index = pd.MultiIndex.from_arrays(
-        [_monthly_ic.index.str.slice(0, 4), _monthly_ic.index.str.slice(4, 6)],
-        names=["year", "month"],
+    
+    # 图B: IC 分布
+    graph_dist = DistplotGraph(
+        df=daily_ic.to_frame("IC"),
+        layout={"title": "IC Distribution", "width": "100%", "height": 400}
     )
-
-    # fill month
-    _month_list = pd.date_range(
-        start=pd.Timestamp(f"{_index.min()[:4]}0101"),
-        end=pd.Timestamp(f"{_index.max()[:4]}1231"),
-        freq="1M",
-    )
-    _years = []
-    _month = []
-    for _date in _month_list:
-        _date = _date.strftime("%Y%m%d")
-        _years.append(_date[:4])
-        _month.append(_date[4:6])
-
-    fill_index = pd.MultiIndex.from_arrays([_years, _month], names=["year", "month"])
-
-    _monthly_ic = _monthly_ic.reindex(fill_index)
-
-    ic_bar_figure = ic_figure(ic_df, kwargs.get("show_nature_day", False))
-
-    ic_heatmap_figure = HeatmapGraph(
-        _monthly_ic.unstack(),
-        layout=dict(title="Monthly IC", xaxis=dict(dtick=1), yaxis=dict(tickformat="04d", dtick=1)),
-        graph_kwargs=dict(xtype="array", ytype="array"),
-    ).figure
-
-    dist = stats.norm
-    _qqplot_fig = _plot_qq(_ic, dist)
-
-    if isinstance(dist, stats.norm.__class__):
-        dist_name = "Normal"
-    else:
-        dist_name = "Unknown"
-
-    _ic_df = _ic.to_frame("IC")
-    _bin_size = ((_ic_df.max() - _ic_df.min()) / 20).min()
-    _sub_graph_data = [
-        (
-            "IC",
-            dict(
-                row=1,
-                col=1,
-                name="",
-                kind="DistplotGraph",
-                graph_kwargs=dict(bin_size=_bin_size),
-            ),
-        ),
-        (_qqplot_fig, dict(row=1, col=2)),
-    ]
-    ic_hist_figure = SubplotsGraph(
-        _ic_df.dropna(),
-        kind_map=dict(kind="HistogramGraph", kwargs=dict()),
-        subplots_kwargs=dict(
-            rows=1,
-            cols=2,
-            print_grid=False,
-            subplot_titles=["IC", "IC %s Dist. Q-Q" % dist_name],
-        ),
-        sub_graph_data=_sub_graph_data,
-        layout=dict(
-            yaxis2=dict(title="Observed Quantile"),
-            xaxis2=dict(title=f"{dist_name} Distribution Quantile"),
-        ),
-    ).figure
-
-    return ic_bar_figure, ic_heatmap_figure, ic_hist_figure
+    
+    figs = [graph_ts.figure, graph_dist.figure]
+    
+    if show_notebook:
+        SubplotsGraph.show_graph_in_notebook(figs)
+    return figs
 
 
-def _pred_autocorr(pred_label: pd.DataFrame, lag=1, **kwargs) -> tuple:
-    pred = pred_label.copy()
-    pred["score_last"] = pred.groupby(level="instrument")["score"].shift(lag)
-    ac = pred.groupby(level="datetime").apply(lambda x: x["score"].rank(pct=True).corr(x["score_last"].rank(pct=True)))
-    _df = ac.to_frame("value")
-    ac_figure = ScatterGraph(
-        _df,
-        layout=dict(
-            title="Auto Correlation",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(_df.index))),
-        ),
-    ).figure
-    return (ac_figure,)
-
-
-def _pred_turnover(pred_label: pd.DataFrame, N=5, lag=1, **kwargs) -> tuple:
-    pred = pred_label.copy()
-    pred["score_last"] = pred.groupby(level="instrument")["score"].shift(lag)
-    top = pred.groupby(level="datetime").apply(
-        lambda x: 1
-        - x.nlargest(len(x) // N, columns="score").index.isin(x.nlargest(len(x) // N, columns="score_last").index).sum()
-        / (len(x) // N)
-    )
-    bottom = pred.groupby(level="datetime").apply(
-        lambda x: 1
-        - x.nsmallest(len(x) // N, columns="score")
-        .index.isin(x.nsmallest(len(x) // N, columns="score_last").index)
-        .sum()
-        / (len(x) // N)
-    )
-    r_df = pd.DataFrame(
-        {
-            "Top": top,
-            "Bottom": bottom,
+def _pred_autocorr(
+    pred_label: pd.DataFrame, 
+    lag: int = 1, 
+    show_notebook: bool = True
+) -> object:
+    """
+    绘制预测值自相关性
+    """
+    score = pred_label["score"]
+    
+    # 1. 计算 Lag 1-5 的自相关系数
+    ac_data = {}
+    lags = range(1, 6) 
+    
+    # 将数据转为 Panel 格式 (Index: date, Columns: instrument) 以加速计算
+    try:
+        score_unstack = score.unstack(level="instrument")
+    except Exception:
+        score_unstack = score.reset_index().pivot(index="datetime", columns="instrument", values="score")
+        
+    for l in lags:
+        # 计算每只股票的自相关系数，取平均
+        ac = score_unstack.apply(lambda x: x.autocorr(lag=l)).mean()
+        ac_data[f"Lag-{l}"] = ac
+        
+    df_ac = pd.DataFrame(list(ac_data.values()), index=list(ac_data.keys()), columns=["Autocorr"])
+    
+    # 2. 绘图 (柱状图)
+    graph = BarGraph(
+        df=df_ac,
+        layout={
+            "title": "Prediction Autocorrelation",
+            "width": "100%", 
+            "height": 400,
+            "yaxis": {"title": "Autocorrelation Coefficient"}
         }
     )
-    turnover_figure = ScatterGraph(
-        r_df,
-        layout=dict(
-            title="Top-Bottom Turnover",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(r_df.index))),
-        ),
-    ).figure
-    return (turnover_figure,)
+    
+    if show_notebook:
+        BarGraph.show_graph_in_notebook([graph.figure])
+    return graph.figure
 
 
-def ic_figure(ic_df: pd.DataFrame, show_nature_day=True, **kwargs) -> go.Figure:
-    r"""IC figure
-
-    :param ic_df: ic DataFrame
-    :param show_nature_day: whether to display the abscissa of non-trading day
-    :param \*\*kwargs: contains some parameters to control plot style in plotly. Currently, supports
-       - `rangebreaks`: https://plotly.com/python/time-series/#Hiding-Weekends-and-Holidays
-    :return: plotly.graph_objs.Figure
-    """
-    if show_nature_day:
-        date_index = pd.date_range(ic_df.index.min(), ic_df.index.max())
-        ic_df = ic_df.reindex(date_index)
-    ic_bar_figure = BarGraph(
-        ic_df,
-        layout=dict(
-            title="Information Coefficient (IC)",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(ic_df.index))),
-        ),
-    ).figure
-    return ic_bar_figure
-
+# ==============================================================================
+# 主入口函数 (API)
+# 用户只需要调用这个函数
+# ==============================================================================
 
 def model_performance_graph(
     pred_label: pd.DataFrame,
     lag: int = 1,
     N: int = 5,
-    reverse=False,
-    rank=False,
-    graph_names: list = ["group_return", "pred_ic", "pred_autocorr"],
+    reverse: bool = False,
+    rank: bool = False,
     show_notebook: bool = True,
-    show_nature_day: bool = False,
-    use_pyecharts: bool = False,
-    **kwargs,
-) -> [list, tuple]:
-    r"""Model performance
-
-    :param pred_label: index is **pd.MultiIndex**, index name is **[instrument, datetime]**; columns names is **[score, label]**.
-           It is usually same as the label of model training(e.g. "Ref($close, -2)/Ref($close, -1) - 1").
-
-
-            .. code-block:: python
-
-                instrument  datetime        score       label
-                SH600004    2017-12-11  -0.013502       -0.013502
-                                2017-12-12  -0.072367       -0.072367
-                                2017-12-13  -0.068605       -0.068605
-                                2017-12-14  0.012440        0.012440
-                                2017-12-15  -0.102778       -0.102778
-
-
-    :param lag: `pred.groupby(level='instrument')['score'].shift(lag)`. It will be only used in the auto-correlation computing.
-    :param N: group number, default 5.
-    :param reverse: if `True`, `pred['score'] *= -1`.
-    :param rank: if **True**, calculate rank ic.
-    :param graph_names: graph names; default ['cumulative_return', 'pred_ic', 'pred_autocorr', 'pred_turnover'].
-    :param show_notebook: whether to display graphics in notebook, the default is `True`.
-    :param show_nature_day: whether to display the abscissa of non-trading day.
-    :param use_pyecharts: whether to use pyecharts for plotting (requires pyecharts to be installed), default False.
-    :param \*\*kwargs: contains some parameters to control plot style in plotly. Currently, supports
-       - `rangebreaks`: https://plotly.com/python/time-series/#Hiding-Weekends-and-Holidays
-    :return: if show_notebook is True, display in notebook; else return `plotly.graph_objs.Figure` list or pyecharts chart list.
+) -> List[object]:
     """
-    # 如果指定使用pyecharts且可用，则使用pyecharts版本
-    if use_pyecharts and PYECHARTS_AVAILABLE:
-        return model_performance_graph_pyecharts(
-            pred_label=pred_label,
-            lag=lag,
-            N=N,
-            reverse=reverse,
-            rank=rank,
-            graph_names=graph_names,
-            show_notebook=show_notebook,
-            show_nature_day=show_nature_day,
-            **kwargs
-        )
-
-    # 否则使用原有的plotly版本
-    figure_list = []
-    for graph_name in graph_names:
-        fun_res = eval(f"_{graph_name}")(
-            pred_label=pred_label, lag=lag, N=N, reverse=reverse, rank=rank, show_nature_day=show_nature_day, **kwargs
-        )
-        figure_list += fun_res
-
+    生成完整的模型性能分析报告
+    
+    :param pred_label: 包含 score 和 label 的 DataFrame
+    :param lag: 滞后天数
+    :param N: 分组数
+    :param reverse: 是否反转分数
+    :param rank: 是否使用 Rank IC
+    :param show_notebook: 是否在 Notebook 中显示
+    """
+    
+    # 1. 生成分组收益图
+    fig_group = _group_return(pred_label, N=N, reverse=reverse, show_notebook=False)
+    
+    # 2. 生成 IC 分析图 (返回两个图：时序+分布)
+    figs_ic = _pred_ic(pred_label, rank=rank, show_notebook=False)
+    
+    # 3. 生成自相关图
+    fig_ac = _pred_autocorr(pred_label, lag=lag, show_notebook=False)
+    
+    # 4. (可选) 生成 QQ 图，如果数据量过大可注释掉
+    # fig_qq = _plot_qq(pred_label["score"], show_notebook=False)
+    
+    # 汇总所有图表对象
+    all_figs = [fig_group] + figs_ic + [fig_ac]
+    
+    # 统一显示
     if show_notebook:
-        BarGraph.show_graph_in_notebook(figure_list)
-    else:
-        return figure_list
+        SubplotsGraph.show_graph_in_notebook(all_figs)
+        
+    return all_figs
