@@ -1,5 +1,10 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+"""
+Author: hugo2046 shen.lan123@gmail.com
+Date: 2025-02-18 11:26:04
+LastEditors: shen.lan123@gmail.com
+LastEditTime: 2026-01-19 13:00:45
+Description: pyecharts重构风险分析图
+"""
 
 from typing import Iterable, Any
 
@@ -30,9 +35,13 @@ def _get_risk_analysis_data_with_report(
     #     analysis["pred_long_short"] = risk_analysis(report_long_short_df["long_short"])
 
     if not report_normal_df.empty:
-        analysis["excess_return_without_cost"] = risk_analysis(report_normal_df["return"] - report_normal_df["bench"])
+        analysis["excess_return_without_cost"] = risk_analysis(
+            report_normal_df["return"] - report_normal_df["bench"]
+        )
         analysis["excess_return_with_cost"] = risk_analysis(
-            report_normal_df["return"] - report_normal_df["bench"] - report_normal_df["cost"]
+            report_normal_df["return"]
+            - report_normal_df["bench"]
+            - report_normal_df["cost"]
         )
     analysis_df = pd.concat(analysis)  # type: pd.DataFrame
     analysis_df["date"] = date
@@ -52,7 +61,9 @@ def _get_all_risk_analysis(risk_df: pd.DataFrame) -> pd.DataFrame:
     return risk_df.drop("mean", axis=1)
 
 
-def _get_monthly_risk_analysis_with_report(report_normal_df: pd.DataFrame) -> pd.DataFrame:
+def _get_monthly_risk_analysis_with_report(
+    report_normal_df: pd.DataFrame,
+) -> pd.DataFrame:
     """Get monthly analysis data
 
     :param report_normal_df:
@@ -61,7 +72,9 @@ def _get_monthly_risk_analysis_with_report(report_normal_df: pd.DataFrame) -> pd
     """
 
     # Group by month
-    report_normal_gp = report_normal_df.groupby([report_normal_df.index.year, report_normal_df.index.month])
+    report_normal_gp = report_normal_df.groupby(
+        [report_normal_df.index.year, report_normal_df.index.month]
+    )
     # report_long_short_gp = report_long_short_df.groupby(
     #     [report_long_short_df.index.year, report_long_short_df.index.month]
     # )
@@ -88,17 +101,22 @@ def _get_monthly_risk_analysis_with_report(report_normal_df: pd.DataFrame) -> pd
     return _monthly_df
 
 
-def _get_monthly_analysis_with_feature(monthly_df: pd.DataFrame, feature: str = "annualized_return") -> pd.DataFrame:
+def _get_monthly_analysis_with_feature(
+    monthly_df: pd.DataFrame, feature: str = "annualized_return"
+) -> pd.DataFrame:
     """
 
     :param monthly_df:
     :param feature:
     :return:
     """
-    _monthly_df_gp = monthly_df.reset_index().groupby(["level_1"])
+    # Use scalar grouping key to avoid pandas warning about length-1 list-like keys
+    _monthly_df_gp = monthly_df.reset_index().groupby("level_1")
 
     _name_df = _monthly_df_gp.get_group(feature).set_index(["level_0", "level_1"])
-    _temp_df = _name_df.pivot_table(index="date", values=["risk"], columns=_name_df.index)
+    _temp_df = _name_df.pivot_table(
+        index="date", values=["risk"], columns=_name_df.index
+    )
     _temp_df.columns = map(lambda x: "_".join(x[-1]), _temp_df.columns)
     _temp_df.index = _temp_df.index.strftime("%Y-%m")
 
@@ -106,7 +124,7 @@ def _get_monthly_analysis_with_feature(monthly_df: pd.DataFrame, feature: str = 
 
 
 def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
-    """Get analysis graph figure
+    """Get analysis graph figure(Bar Chart)
 
     :param analysis_df:
     :return:
@@ -123,51 +141,128 @@ def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
     # use echarts
     _figure = SubplotsGraph(
         _get_all_risk_analysis(analysis_df),
-        kind_map=dict(kind="BarGraph", kwargs={
-            "xy_reverse": False,            # 纵向
-            "is_show_label": False,         # 隐藏数据标签
-            "is_show_legend": False,        # [Fix] 隐藏图例
-            "axis_formatter": "{value} %",  # Y轴显示 %
-            "is_transform_to_percent": True # 数据乘以 100
-            # "bar_max_width": None         # 不限制宽度，让柱子变粗
-        }),
-        subplots_kwargs={"rows": 4, "cols": 1, "row_width": [1]*4},
-        layout={"height": 1000} 
+        kind_map=dict(
+            kind="BarGraph",
+            kwargs={
+                "xy_reverse": False,  # 纵向
+                "is_show_label": False,  # 隐藏数据标签
+                "is_show_legend": False,  # [Fix] 隐藏图例
+                "axis_formatter": "{value} %",  # Y轴显示 %
+                "is_transform_to_percent": True,  # 数据乘以 100
+                # "bar_max_width": None         # 不限制宽度，让柱子变粗
+            },
+        ),
+        subplots_kwargs={"rows": 4, "cols": 1, "row_width": [1] * 4},
+        layout={"height": 1000},
     ).figure
     return (_figure,)
 
 
 def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterable[Any]:
-    """Get analysis monthly graph figure
+    """Get analysis monthly graph figure(Line Chart)
 
     :param report_normal_df:
     :param report_long_short_df:
     :return:
     """
 
-    # if report_normal_df is None and report_long_short_df is None:
-    #     return []
     if report_normal_df is None:
         return []
 
-    # if report_normal_df is None:
-    #     report_normal_df = pd.DataFrame(index=report_long_short_df.index)
-
-    # if report_long_short_df is None:
-    #     report_long_short_df = pd.DataFrame(index=report_normal_df.index)
-
-    _monthly_df = _get_monthly_risk_analysis_with_report(
+    _monthly_df:pd.DataFrame  = _get_monthly_risk_analysis_with_report(
         report_normal_df=report_normal_df,
-        # report_long_short_df=report_long_short_df,
     )
 
-    for _feature in ["annualized_return", "max_drawdown", "information_ratio", "std"]:
-        _temp_df = _get_monthly_analysis_with_feature(_monthly_df, _feature)
-        yield ScatterGraph(
-            _temp_df,
-            layout=dict(title=_feature, xaxis=dict(type="category", tickangle=45)),
-            graph_kwargs={"mode": "lines+markers"},
-        ).figure
+    # 转为宽表格式，index-date,columns-(metric_feature, risk)
+    df:pd.DataFrame = _monthly_df.set_index("date", append=True)["risk"].unstack(level=[0, 1]).swaplevel(
+        0, 1, axis=1
+    )
+    
+    # 准备容器
+    processed_dfs = []
+    sub_graph_data = []
+    
+    base_kwargs = {
+        "mode": "lines+markers",
+        "axis_formatter": "{value} %",
+        "legend_pos_left": None,
+        "legend_pos_right": "10%",
+        "legend_pos_top": None,
+        "is_show_legend": True,
+    }
+    
+    # feature为mean,std,annualized_return,information_ratio
+    for i,(feature,df) in enumerate(df.groupby(axis=1,level=0)):
+        row_idx = i + 1
+        # 此时index-date,columns-excess_return_without_code和excess_return_with_code
+        sub_df = df[feature].copy()
+        current_kwargs = base_kwargs.copy()
+        
+        if feature == "information_ratio":
+            current_kwargs["axis_formatter"] = None
+            current_kwargs["is_transform_to_percent"] = False
+            unit_suffix = ""
+        else:
+            sub_df = sub_df.multiply(100).round(4)
+            current_kwargs["axis_formatter"] = "{value} %"
+            current_kwargs["is_transform_to_percent"] = True
+            unit_suffix = " (%)"
+        
+        rename_map = {col: f"{feature}:{col}" for col in sub_df.columns}
+        sub_df.rename(columns=rename_map, inplace=True)
+        
+        # 收集数据
+        processed_dfs.append(sub_df)
+        
+        for unique_col in sub_df.columns:
+            original_source_name = unique_col.split(":")[-1]
+            display_name = original_source_name.replace("_", " ").title()
+            display_name += unit_suffix
+            sub_graph_data.append(
+                (unique_col, dict(
+                    row=row_idx, 
+                    col=1, 
+                    title=feature,
+                    name=display_name, # 图例显示内容
+                    kind="ScatterGraph", 
+                    graph_kwargs=current_kwargs
+                ))
+            )
+        
+        # 4. 合并数据并绘图
+    if not processed_dfs:
+        return []
+        
+    final_df = pd.concat(processed_dfs, axis=1)
+
+    _figure = SubplotsGraph(
+        final_df,
+        sub_graph_data=sub_graph_data,
+        subplots_kwargs={
+            "cols": 1, 
+            "rows": len(processed_dfs),
+            "shared_xaxes": True,
+            "row_width": [1] * len(processed_dfs),
+            "vertical_spacing": 0.05
+        },
+        layout={
+            "height": 1000, 
+            "title": "Monthly Risk Analysis",
+            "width": "100%",
+            "title_pos_left": "center"
+        }
+    ).figure
+    
+    return (_figure,)
+        
+    # for _feature in ["annualized_return", "max_drawdown", "information_ratio", "std"]:
+    #     _temp_df = _get_monthly_analysis_with_feature(_monthly_df, _feature)
+    #     yield ScatterGraph(
+    #         _temp_df,
+    #         # layout=dict(title=_feature, xaxis=dict(type="category", tickangle=45)),
+    #         graph_kwargs=graph_kwargs,
+    #         layout={"title": _feature, "title_pos_left": "center"},
+    #     ).figure
 
 
 def risk_analysis_graph(

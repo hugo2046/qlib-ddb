@@ -1,18 +1,15 @@
 '''
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-16 16:57:25
-LastEditors: hugo2046 shen.lan123@gmail.com
-LastEditTime: 2026-01-18 19:33:56
+LastEditors: shen.lan123@gmail.com
+LastEditTime: 2026-01-19 16:52:53
 Description: pyecharts重构画图
 '''
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 import math
 import importlib
 import numpy as np
 import pandas as pd
-from typing import Iterable, List
+from typing import Iterable, List, Any
 
 # 引入 Pyecharts 组件
 from pyecharts.charts import Line, Bar, HeatMap, Grid
@@ -86,11 +83,40 @@ class BaseGraph:
         if not self.chart:
             return
 
+        # 1. 获取基础配置
+        is_show_legend = self._graph_kwargs.get("is_show_legend", True)
+        legend_pos_top = self._graph_kwargs.get("legend_pos_top", "5%")
+        legend_pos_left = self._graph_kwargs.get("legend_pos_left", None)
+        legend_pos_right = self._graph_kwargs.get("legend_pos_right", None)
+        legend_orient = self._graph_kwargs.get("legend_orient", "horizontal")
+        
+        if legend_pos_right is not None:
+            legend_pos_left = None
+
+        axis_formatter = self._graph_kwargs.get("axis_formatter", None)
+        
+        yaxis_opts = opts.AxisOpts(
+            is_scale=True,
+            axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
+            splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+        )
+
+        # 2. 应用配置 (支持 title_pos_left 和 orient)
         self.chart.set_global_opts(
-            title_opts=opts.TitleOpts(title=self._layout.get("title", "")),
-            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross"),
+            title_opts=opts.TitleOpts(
+                title=self._layout.get("title", ""),
+                pos_left=self._layout.get("title_pos_left", "auto") # <--- 支持标题位置配置
+            ),
+            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="line"),
+            legend_opts=opts.LegendOpts(
+                is_show=is_show_legend,
+                pos_top=legend_pos_top,
+                pos_left=legend_pos_left,
+                pos_right=legend_pos_right,
+                orient=legend_orient, # <--- 支持图例方向配置
+            ),
             xaxis_opts=opts.AxisOpts(type_="category", is_scale=True),
-            yaxis_opts=opts.AxisOpts(is_scale=True)
+            yaxis_opts=yaxis_opts
         )
 
     @property
@@ -109,7 +135,7 @@ class ScatterGraph(BaseGraph):
 
         for col, name in self._name_dict.items():
             raw_data = self._df[col].tolist()
-            # [Pure] 仅负责处理 NaN，不再负责业务数值转换
+            # [Pure] 仅负责处理 NaN
             y_data = [x if pd.notna(x) else None for x in raw_data]
             
             final_name = name
@@ -243,14 +269,21 @@ class SubplotsGraph:
         if "rows" in self._subplots_kwargs:
             self.__rows = self._subplots_kwargs["rows"]
         else:
-            self.__rows = math.ceil(len(self._df.columns) / self.__cols)
+            if self._df is not None:
+                self.__rows = math.ceil(len(self._df.columns) / self.__cols)
+            else:
+                self.__rows = 1 # 默认值
 
         self._sub_graph_data = sub_graph_data
-        if self._sub_graph_data is None:
+        # [Fix] 只有在 sub_graph_data 未提供且 df 存在时，才自动生成
+        if self._sub_graph_data is None and self._df is not None:
             self._init_sub_graph_data()
 
         self._grid = None
-        self._init_figure()
+        
+        # [Fix] 确保有数据可画
+        if self._sub_graph_data:
+            self._init_figure()
 
     def _init_sub_graph_data(self):
         self._sub_graph_data = []
@@ -273,7 +306,7 @@ class SubplotsGraph:
 
     def _init_subplots_kwargs(self):
         _cols = 1
-        _rows = len(self._df.columns)
+        _rows = len(self._df.columns) if self._df is not None else 1
         self._subplots_kwargs = dict()
         self._subplots_kwargs["rows"] = _rows
         self._subplots_kwargs["cols"] = _cols
@@ -375,6 +408,28 @@ class SubplotsGraph:
             legend_pos_right_custom = final_kwargs_sample.get("legend_pos_right", None)
             legend_pos_top_custom = final_kwargs_sample.get("legend_pos_top", None)
             
+            # [Fix 1: Title Position]
+            # 动态计算 Title 的位置，使其位于子图上方，而不是默认的 top="auto"
+            title_top_offset = final_kwargs_sample.get("title_top_offset", -4) # 默认向上偏移 4%
+            
+            row_cfg = row_configs.get(row, {"pos_top": "50%", "height": "50%"})
+            try:
+                # 解析 "15.5%" -> 15.5
+                base_top = float(row_cfg["pos_top"].strip('%'))
+                
+                # 计算 Title Top (向上偏移)
+                calc_title_top = base_top + title_top_offset
+                final_title_top = f"{calc_title_top}%"
+                
+                # 计算 Legend Top (向下偏移，进入网格)
+                legend_top_offset = final_kwargs_sample.get("legend_top_offset", 0) 
+                calc_legend_top = base_top + legend_top_offset
+                final_legend_top = f"{calc_legend_top}%"
+                
+            except ValueError:
+                final_title_top = "auto"
+                final_legend_top = "auto"
+
             # 柱宽
             bar_max_width = final_kwargs_sample.get("bar_max_width", None)
 
@@ -419,7 +474,6 @@ class SubplotsGraph:
                         bar_max_width=bar_max_width, 
                     )
 
-            row_cfg = row_configs.get(row, {"pos_top": "50%", "height": "50%"})
             col_cfg = col_configs.get(col, {"pos_left": "5%", "width": "90%"})
 
             is_last_row = (row == self.__rows)
@@ -428,7 +482,6 @@ class SubplotsGraph:
                 xaxis_show_label = False
             
             final_legend_left = legend_pos_left_custom if legend_pos_left_custom is not None else col_cfg["pos_left"]
-            final_legend_top = legend_pos_top_custom if legend_pos_top_custom is not None else row_cfg["pos_top"]
             if legend_pos_right_custom is not None:
                 final_legend_left = None
             
@@ -458,14 +511,21 @@ class SubplotsGraph:
                     splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
                 )
 
+            # 获取子图标题
+            sub_title_text = first_item_map.get("title", "")
+            if not sub_title_text:
+                 if row == 1 and col == 1:
+                     sub_title_text = self._layout.get("title", "")
+
             chart.set_global_opts(
                 title_opts=opts.TitleOpts(
-                    title=self._layout.get("title", "") if row == 1 and col == 1 else "",
-                    pos_left="center"
+                    title=sub_title_text,
+                    pos_left=self._layout.get("title_pos_left", "auto"),
+                    pos_top=final_title_top, # [Fix] 设置标题位置，防止堆叠
                 ),
                 legend_opts=opts.LegendOpts(
                     is_show=is_show_legend, 
-                    pos_top=final_legend_top, 
+                    pos_top=final_legend_top, # [Fix] 设置图例位置
                     pos_left=final_legend_left,
                     pos_right=legend_pos_right_custom,
                     orient="horizontal",
