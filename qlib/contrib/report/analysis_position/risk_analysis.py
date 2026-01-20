@@ -9,10 +9,10 @@ Description: pyecharts重构风险分析图
 from typing import Iterable, Any
 
 import pandas as pd
+from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
 
 from ...evaluate import risk_analysis
-
-from ..graph import SubplotsGraph, ScatterGraph
+from ..graph import SubplotsGraph, ScatterGraph, get_percent_formatter, get_axis_percent_formatter  # [New] 导入工具函数
 
 
 def _get_risk_analysis_data_with_report(
@@ -184,28 +184,35 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
     
     base_kwargs = {
         "mode": "lines+markers",
-        "axis_formatter": "{value} %",
         "legend_pos_left": None,
-        "legend_pos_right": "10%",
-        "legend_pos_top": None,
+        "legend_pos_right": "5%",
+        "legend_pos_top": None,  # 让 SubplotsGraph 自动计算
+        "title_top_offset": -4,  # 标题上移
         "is_show_legend": True,
     }
-    
+
     # feature为mean,std,annualized_return,information_ratio
-    for i,(feature,df) in enumerate(df.groupby(axis=1,level=0)):
+    for i, (feature, df_grp) in enumerate(df.groupby(axis=1, level=0)):
         row_idx = i + 1
         # 此时index-date,columns-excess_return_without_code和excess_return_with_code
-        sub_df = df[feature].copy()
+        sub_df = df_grp[feature].copy()
         current_kwargs = base_kwargs.copy()
-        
+
+        # [Modify] 核心修改点：使用 JS Formatter
         if feature == "information_ratio":
             current_kwargs["axis_formatter"] = None
-            current_kwargs["is_transform_to_percent"] = False
+            current_kwargs["tooltip_formatter"] = None  # IR 不需要百分比格式化
             unit_suffix = ""
         else:
-            sub_df = sub_df.multiply(100).round(4)
-            current_kwargs["axis_formatter"] = "{value} %"
-            current_kwargs["is_transform_to_percent"] = True
+            # 1. 移除 Python 端的 multiply(100)，保留原始小数精度
+            # sub_df = sub_df.multiply(100).round(4)  # <-- REMOVED
+
+            # 2. Tooltip 使用 JS Formatter (自动乘100并保留4位小数)
+            current_kwargs["tooltip_formatter"] = JsCode(get_percent_formatter(4))
+
+            # 3. Y轴也需要改为 JS Formatter (否则会显示 0.24 %)
+            current_kwargs["axis_formatter"] = JsCode(get_axis_percent_formatter(0))
+
             unit_suffix = " (%)"
         
         rename_map = {col: f"{feature}:{col}" for col in sub_df.columns}

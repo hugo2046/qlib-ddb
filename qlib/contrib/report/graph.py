@@ -15,6 +15,106 @@ from typing import Iterable, List, Any
 from pyecharts.charts import Line, Bar, HeatMap, Grid
 from pyecharts import options as opts
 from pyecharts.globals import ThemeType
+from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
+
+
+# ============================================================================
+# Pyecharts 工具函数区
+# ============================================================================
+
+def get_percent_formatter(decimals: int = 4) -> str:
+    """生成 Tooltip 百分比格式化 JavaScript 代码
+
+    该函数生成一段 JavaScript 代码，用于 ECharts Tooltip 的 formatter 配置。
+    支持自动处理 trigger="axis" (params 为数组) 和 trigger="item" (params 为对象) 两种模式。
+    数据会在前端自动乘以 100 并保留指定小数位，然后添加百分号。
+
+    .. note::
+        此函数返回的是 JavaScript 函数字符串，需要配合 :class:`pyecharts.commons.utils.JsCode` 使用。
+        数据应保持原始小数形式（如 0.2345），由前端 JS 负责转换为百分比显示。
+
+    Args:
+        decimals (int): 小数位数，默认为 4 位。例如：
+            - decimals=0: 显示为 "23 %"
+            - decimals=2: 显示为 "23.45 %"
+            - decimals=4: 显示为 "23.4500 %"
+
+    Returns:
+        str: JavaScript 函数字符串，可直接传递给 :class:`~pyecharts.options.TooltipOpts` 的 formatter 参数。
+
+    Raises:
+        无异常
+
+    Example:
+        >>> from pyecharts.commons.utils import JsCode
+        >>> from pyecharts import options as opts
+        >>>
+        >>> # 方式 1: 直接使用字符串（BaseGraph 会自动检测并转换为 JsCode）
+        >>> tooltip_formatter = get_percent_formatter(decimals=2)
+        >>>
+        >>> # 方式 2: 显式包装为 JsCode（推荐）
+        >>> tooltip_opts = opts.TooltipOpts(
+        ...     trigger="axis",
+        ...     formatter=JsCode(get_percent_formatter(decimals=2))
+        ... )
+        >>>
+        >>> # 在 graph_kwargs 中使用
+        >>> graph_kwargs = {
+        ...     "tooltip_formatter": JsCode(get_percent_formatter(4))
+        ... }
+
+    See Also:
+        :func:`get_axis_percent_formatter`: 生成坐标轴百分比格式化器
+        :meth:`BaseGraph._normalize_formatter`: 智能检测并转换 formatter
+    """
+    # [Fix] 使用单行格式避免HTML生成时的换行和编码问题
+    return f"function(params){{var res=params[0].name+'<br/>';for(var i=0;i<params.length;i++){{var val=params[i].value;if(Array.isArray(val)){{val=val[1];}}var pct=(Number(val)*100).toFixed({decimals})+'%';res+=params[i].marker+params[i].seriesName+':'+pct+'<br/>';}}return res;}}"
+
+
+def get_axis_percent_formatter(decimals: int = 0) -> str:
+    """生成坐标轴百分比格式化 JavaScript 代码
+
+    该函数生成一段 JavaScript 代码，用于 ECharts 坐标轴标签的 formatter 配置。
+    数据会在前端自动乘以 100 并保留指定小数位，然后添加百分号。
+
+    .. note::
+        此函数返回的是 JavaScript 函数字符串，需要配合 :class:`pyecharts.commons.utils.JsCode` 使用。
+        适用于 Y 轴或 X 轴标签的百分比显示。
+
+    Args:
+        decimals (int): 小数位数，默认为 0 位（整数显示）。例如：
+            - decimals=0: 显示为 "23 %"（默认，整数）
+            - decimals=1: 显示为 "23.5 %"
+            - decimals=2: 显示为 "23.45 %"
+
+    Returns:
+        str: JavaScript 函数字符串，可直接传递给 :class:`~pyecharts.options.LabelOpts` 的 formatter 参数。
+
+    Raises:
+        无异常
+
+    Example:
+        >>> from pyecharts.commons.utils import JsCode
+        >>> from pyecharts import options as opts
+        >>>
+        >>> # 方式 1: 在 graph_kwargs 中使用
+        >>> graph_kwargs = {
+        ...     "axis_formatter": JsCode(get_axis_percent_formatter(decimals=2))
+        ... }
+        >>>
+        >>> # 方式 2: 直接配置到 AxisOpts
+        >>> yaxis_opts = opts.AxisOpts(
+        ...     is_scale=True,
+        ...     axislabel_opts=opts.LabelOpts(
+        ...         formatter=JsCode(get_axis_percent_formatter(0))
+        ...     )
+        ... )
+
+    See Also:
+        :func:`get_percent_formatter`: 生成 Tooltip 百分比格式化器
+        :meth:`BaseGraph._normalize_formatter`: 智能检测并转换 formatter
+    """
+    return f"function(value) {{ return (value * 100).toFixed({decimals}) + ' %'; }}"
 
 class BaseGraph:
     _name = None
@@ -79,6 +179,66 @@ class BaseGraph:
                 except ImportError:
                     print("IPython not found, cannot render in notebook.")
 
+    @staticmethod
+    def _normalize_formatter(formatter):
+        """标准化 formatter，支持字符串模板和 JavaScript 函数字符串
+
+        该方法用于智能检测并转换 formatter 参数，实现向后兼容性。
+        支持三种输入格式：
+        1. None: 直接返回 None
+        2. 字符串模板（如 "{value} %"）: 直接返回，用于 ECharts 原生字符串模板
+        3. JavaScript 函数字符串: 自动包装为 :class:`~pyecharts.commons.utils.JsCode` 对象
+
+        .. note::
+            此方法通过检测字符串中是否包含 "function" 关键字来判断是否为 JavaScript 函数。
+            这种设计允许用户既可以使用简单的字符串模板，也可以使用复杂的 JavaScript 格式化逻辑。
+
+        Args:
+            formatter: 可以是以下类型之一：
+                - None: 不使用格式化器
+                - str: 字符串模板（如 "{value} %"）或 JavaScript 函数字符串（如 "function(x){return x;}"）
+                - JsCode: 已包装的 JsCode 对象（直接返回）
+
+        Returns:
+            None or str or JsCode: 根据输入类型返回：
+                - None: 输入为 None 时
+                - str: 输入为字符串模板时
+                - JsCode: 输入为 JavaScript 函数字符串时（自动包装）
+
+        Raises:
+            无异常
+
+        Example:
+            >>> from pyecharts.commons.utils import JsCode
+            >>>
+            >>> # 案例 1: 字符串模板（用于简单的占位符替换）
+            >>> _normalize_formatter("{value} %")
+            '{value} %'
+            >>>
+            >>> # 案例 2: JavaScript 函数字符串（自动包装为 JsCode）
+            >>> result = _normalize_formatter("function(x){return x * 100;}")
+            >>> isinstance(result, JsCode)
+            True
+            >>>
+            >>> # 案例 3: None 直接返回
+            >>> _normalize_formatter(None) is None
+            True
+            >>>
+            >>> # 案例 4: JsCode 对象直接返回
+            >>> js_code = JsCode("function(x){return x;}")
+            >>> _normalize_formatter(js_code) is js_code
+            True
+
+        See Also:
+            :func:`get_percent_formatter`: 生成 Tooltip 百分比格式化器
+            :func:`get_axis_percent_formatter`: 生成坐标轴百分比格式化器
+        """
+        if formatter is None:
+            return None
+        if isinstance(formatter, str) and "function" in formatter:
+            return JsCode(formatter)
+        return formatter
+
     def _apply_global_opts(self):
         if not self.chart:
             return
@@ -93,8 +253,10 @@ class BaseGraph:
         if legend_pos_right is not None:
             legend_pos_left = None
 
-        axis_formatter = self._graph_kwargs.get("axis_formatter", None)
-        
+        # [New] 标准化 formatter（支持字符串和 JsCode）
+        axis_formatter = self._normalize_formatter(self._graph_kwargs.get("axis_formatter", None))
+        tooltip_formatter = self._normalize_formatter(self._graph_kwargs.get("tooltip_formatter", None))
+
         yaxis_opts = opts.AxisOpts(
             is_scale=True,
             axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
@@ -107,7 +269,11 @@ class BaseGraph:
                 title=self._layout.get("title", ""),
                 pos_left=self._layout.get("title_pos_left", "auto") # <--- 支持标题位置配置
             ),
-            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="line"),
+            tooltip_opts=opts.TooltipOpts(
+                trigger="axis",
+                axis_pointer_type="line",
+                formatter=tooltip_formatter  # [New] 应用 formatter
+            ),
             legend_opts=opts.LegendOpts(
                 is_show=is_show_legend,
                 pos_top=legend_pos_top,
@@ -400,8 +566,15 @@ class SubplotsGraph:
             final_kwargs_sample.update(first_item_map.get("graph_kwargs", {}))
             
             is_xy_reverse = "Bar" in kind and final_kwargs_sample.get("xy_reverse", False)
-            axis_formatter = final_kwargs_sample.get("axis_formatter", None)
-            
+
+            # [New] 标准化 formatter（支持字符串和 JsCode）
+            axis_formatter = BaseGraph._normalize_formatter(
+                final_kwargs_sample.get("axis_formatter", None)
+            )
+            tooltip_formatter = BaseGraph._normalize_formatter(
+                final_kwargs_sample.get("tooltip_formatter", None)
+            )
+
             # 控制图例
             is_show_legend = final_kwargs_sample.get("is_show_legend", True)
             legend_pos_left_custom = final_kwargs_sample.get("legend_pos_left", None)
@@ -533,10 +706,11 @@ class SubplotsGraph:
                     textstyle_opts=opts.TextStyleOpts(font_size=10)
                 ),
                 tooltip_opts=opts.TooltipOpts(
-                    trigger="axis", 
-                    axis_pointer_type="line", 
+                    trigger="axis",
+                    axis_pointer_type="line",
                     background_color="rgba(255, 255, 255, 0.9)",
-                    border_width=1
+                    border_width=1,
+                    formatter=tooltip_formatter  # [New] 应用 formatter
                 ),
                 xaxis_opts=xaxis_config,
                 yaxis_opts=yaxis_config
