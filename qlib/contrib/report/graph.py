@@ -281,7 +281,11 @@ class BaseGraph:
                 pos_right=legend_pos_right,
                 orient=legend_orient, # <--- 支持图例方向配置
             ),
-            xaxis_opts=opts.AxisOpts(type_="category", is_scale=True),
+            xaxis_opts=opts.AxisOpts(
+                type_="category",
+                is_scale=True,
+                splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+            ),
             yaxis_opts=yaxis_opts
         )
 
@@ -677,6 +681,7 @@ class SubplotsGraph:
                     boundary_gap=False if isinstance(chart, Line) else True,
                     axislabel_opts=opts.LabelOpts(is_show=xaxis_show_label),
                     axistick_opts=opts.AxisTickOpts(is_show=xaxis_show_label),
+                    splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
                 )
                 yaxis_config = opts.AxisOpts(
                     is_scale=True,
