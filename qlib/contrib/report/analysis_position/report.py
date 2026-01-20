@@ -1,15 +1,16 @@
 '''
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-17 00:35:10
-LastEditors: hugo2046 shen.lan123@gmail.com
-LastEditTime: 2026-01-18 20:46:48
+LastEditors: shen.lan123@gmail.com
+LastEditTime: 2026-01-20 10:29:55
 Description: pyecharts重构
 '''
 import pandas as pd
 from pyecharts import options as opts
+from pyecharts.commons.utils import JsCode
 
-# 引入我们在 Step 2 和 Step 3 重构的 graph 模块
-from ..graph import SubplotsGraph, BaseGraph
+from ..graph import (BaseGraph, SubplotsGraph, get_axis_percent_formatter,
+                     get_percent_formatter)
 
 
 def _calculate_maximum(df: pd.DataFrame, is_ex: bool = False):
@@ -82,8 +83,6 @@ def _report_figure(df: pd.DataFrame) -> list:
     _temp_df.set_index(index_name, inplace=True)
     _temp_df.iloc[0] = 0
     
-    # 手动转换数据为百分比数值 (适配 graph.py 的纯净模式)
-    report_df = _temp_df * 100
 
     # 2. 构造 MarkArea (回撤阴影)
     
@@ -116,14 +115,16 @@ def _report_figure(df: pd.DataFrame) -> list:
     _default_kind_map = dict(kind="ScatterGraph",
                              kwargs={"mode": "lines+markers",
                                      "fill": "tozeroy",
-                                     "axis_formatter": "{value} %",
                                      "legend_pos_left": None,
-                                     "legend_pos_right": "5%"})
+                                     "legend_pos_right": "5%",
+                                     "tooltip_formatter": JsCode(get_percent_formatter(2)),
+                                     "axis_formatter": JsCode(get_axis_percent_formatter(2))})
     
     _temp_fill_args = {"fill": "tozeroy", 
                        "mode": "lines+markers",
-                       "axis_formatter": "{value} %", 
+                       "axis_formatter": JsCode(get_axis_percent_formatter(2)), 
                        "legend_pos_left": None,
+                       "tooltip_formatter": JsCode(get_percent_formatter(2)),
                        "legend_pos_right": "5%" }
 
     # 原始配置列表

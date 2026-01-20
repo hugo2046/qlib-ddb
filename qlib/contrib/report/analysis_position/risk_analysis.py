@@ -147,8 +147,8 @@ def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
                 "xy_reverse": False,  # 纵向
                 "is_show_label": False,  # 隐藏数据标签
                 "is_show_legend": False,  # [Fix] 隐藏图例
-                "axis_formatter": "{value} %",  # Y轴显示 %
-                "is_transform_to_percent": True,  # 数据乘以 100
+                "axis_formatter": JsCode(get_axis_percent_formatter(2)),  # Y轴显示 %
+                "tooltip_formatter": JsCode(get_percent_formatter(4)),  # 数据乘以 100
                 # "bar_max_width": None         # 不限制宽度，让柱子变粗
             },
         ),
@@ -202,18 +202,18 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
         if feature == "information_ratio":
             current_kwargs["axis_formatter"] = None
             current_kwargs["tooltip_formatter"] = None  # IR 不需要百分比格式化
-            unit_suffix = ""
+            # unit_suffix = ""
         else:
             # 1. 移除 Python 端的 multiply(100)，保留原始小数精度
             # sub_df = sub_df.multiply(100).round(4)  # <-- REMOVED
 
             # 2. Tooltip 使用 JS Formatter (自动乘100并保留4位小数)
-            current_kwargs["tooltip_formatter"] = JsCode(get_percent_formatter(4))
+            current_kwargs["tooltip_formatter"] = JsCode(get_percent_formatter(2))
 
             # 3. Y轴也需要改为 JS Formatter (否则会显示 0.24 %)
-            current_kwargs["axis_formatter"] = JsCode(get_axis_percent_formatter(0))
+            current_kwargs["axis_formatter"] = JsCode(get_axis_percent_formatter(2))
 
-            unit_suffix = " (%)"
+            # unit_suffix = " (%)"
         
         rename_map = {col: f"{feature}:{col}" for col in sub_df.columns}
         sub_df.rename(columns=rename_map, inplace=True)
@@ -224,7 +224,7 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
         for unique_col in sub_df.columns:
             original_source_name = unique_col.split(":")[-1]
             display_name = original_source_name.replace("_", " ").title()
-            display_name += unit_suffix
+            # display_name += unit_suffix
             sub_graph_data.append(
                 (unique_col, dict(
                     row=row_idx, 
