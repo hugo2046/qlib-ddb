@@ -7,15 +7,126 @@ Description: pyecharts重构画图
 '''
 import math
 import importlib
+import os
 import numpy as np
 import pandas as pd
-from typing import Iterable, List, Any
+from typing import Iterable, List, Any, Optional
 
 # 引入 Pyecharts 组件
 from pyecharts.charts import Line, Bar, HeatMap, Grid
 from pyecharts import options as opts
 from pyecharts.globals import ThemeType
 from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
+
+
+# ============================================================================
+# Jupyter 环境检测与适配
+# ============================================================================
+
+class _JupyterEnvironmentDetector:
+    """Jupyter 环境检测器 (内部类)
+
+    用于检测当前运行环境是 Jupyter Notebook 还是 Jupyter Lab,
+    以便正确配置 pyecharts 的显示参数。
+
+    参考:
+    - https://github.com/pyecharts/pyecharts/issues/1756
+    - https://blog.csdn.net/silent1cat/article/details/117944987
+    """
+
+    _detected_type = None
+    _js_loaded = False
+
+    @classmethod
+    def _is_jupyter_lab(cls) -> bool:
+        """检测是否在 Jupyter Lab 环境中
+
+        使用启发式方法检测:
+        1. 检查环境中是否只安装了 jupyterlab (没有 notebook)
+        2. 如果两者都安装,默认使用 notebook 模式 (兼容性更好)
+        """
+        try:
+            # 检查是否只安装了 jupyterlab 而没有 notebook
+            import importlib
+            jupyterlab_spec = importlib.util.find_spec('jupyterlab')
+            notebook_spec = importlib.util.find_spec('notebook')
+
+            # 如果只有 jupyterlab,没有 notebook
+            if jupyterlab_spec is not None and notebook_spec is None:
+                return True
+
+            # 如果两者都有,默认认为不是 Lab (更保守的策略)
+            # 用户可以手动配置 CurrentConfig.NOTEBOOK_TYPE
+            return False
+
+        except ImportError:
+            return False
+
+    @classmethod
+    def detect_environment(cls) -> str:
+        """检测 Jupyter 环境类型
+
+        Returns:
+            str: 'jupyter_lab', 'jupyter_notebook', 或 'unknown'
+        """
+        if cls._detected_type is not None:
+            return cls._detected_type
+
+        try:
+            from IPython import get_ipython
+            ipython = get_ipython()
+
+            if ipython is None:
+                cls._detected_type = 'unknown'
+                return cls._detected_type
+
+            if not hasattr(ipython, 'kernel'):
+                cls._detected_type = 'unknown'
+                return cls._detected_type
+
+            # 检测 Jupyter Lab (保守策略)
+            if cls._is_jupyter_lab():
+                cls._detected_type = 'jupyter_lab'
+            else:
+                # 默认认为是 notebook (兼容性最好)
+                cls._detected_type = 'jupyter_notebook'
+
+        except ImportError:
+            cls._detected_type = 'unknown'
+
+        return cls._detected_type
+
+    @classmethod
+    def configure_pyecharts(cls):
+        """配置 pyecharts 以适配当前的 Jupyter 环境
+
+        对于 Jupyter Lab 环境,需要设置 CurrentConfig.NOTEBOOK_TYPE。
+        该方法会自动检测环境并进行配置。
+        """
+        env_type = cls.detect_environment()
+
+        if env_type == 'jupyter_lab':
+            try:
+                from pyecharts.globals import CurrentConfig, NotebookType
+                CurrentConfig.NOTEBOOK_TYPE = NotebookType.JUPYTER_LAB
+            except ImportError:
+                pass  # pyecharts 未安装或版本不支持
+
+    @classmethod
+    def load_javascript_if_needed(cls):
+        """在需要时加载 pyecharts JavaScript
+
+        对于 Jupyter Lab,首次渲染前建议调用 load_javascript()。
+        该方法会确保只加载一次。
+        """
+        if cls._js_loaded:
+            return
+
+        env_type = cls.detect_environment()
+
+        if env_type == 'jupyter_lab':
+            # 标记已加载 (实际的 JavaScript 加载会在首次 render_notebook 时自动发生)
+            cls._js_loaded = True
 
 
 # ============================================================================
@@ -171,13 +282,45 @@ class BaseGraph:
 
     @staticmethod
     def show_graph_in_notebook(figure_list: Iterable = None):
+        """在 Jupyter Notebook 或 Jupyter Lab 中显示 pyecharts 图表
+
+        该方法会自动检测 Jupyter 环境类型 (Notebook / Lab) 并进行相应配置:
+        - Jupyter Notebook: 直接调用 render_notebook()
+        - Jupyter Lab: 自动配置 CurrentConfig.NOTEBOOK_TYPE = NotebookType.JUPYTER_LAB
+
+        Args:
+            figure_list (Iterable): pyecharts 图表对象的可迭代对象
+
+        使用示例:
+            >>> from qlib.contrib.report.graph import show_graph_in_notebook
+            >>> from pyecharts.charts import Line
+            >>> line = Line()
+            >>> # ... 配置图表 ...
+            >>> show_graph_in_notebook([line])
+
+        参考:
+            - https://github.com/pyecharts/pyecharts/issues/1756
+            - https://blog.csdn.net/silent1cat/article/details/117944987
+        """
+        if figure_list is None:
+            return
+
+        # 配置 pyecharts 以适配当前的 Jupyter 环境
+        _JupyterEnvironmentDetector.configure_pyecharts()
+
+        # 尝试加载 JavaScript (对于 Jupyter Lab)
+        _JupyterEnvironmentDetector.load_javascript_if_needed()
+
         for _chart in figure_list:
             if hasattr(_chart, "render_notebook"):
                 try:
-                    from IPython.display import display
-                    display(_chart.render_notebook())
+                    from IPython.display import display as ipy_display
+                    rendered = _chart.render_notebook()
+                    ipy_display(rendered)
                 except ImportError:
                     print("IPython not found, cannot render in notebook.")
+            else:
+                print(f"Warning: Object does not have render_notebook() method: {type(_chart)}")
 
     @staticmethod
     def _normalize_formatter(formatter):
@@ -698,7 +841,7 @@ class SubplotsGraph:
             chart.set_global_opts(
                 title_opts=opts.TitleOpts(
                     title=sub_title_text,
-                    pos_left=self._layout.get("title_pos_left", "auto"),
+                    pos_left=self._layout.get("title_pos_left", "center"),  # [Fix] 默认居中
                     pos_top=final_title_top, # [Fix] 设置标题位置，防止堆叠
                 ),
                 legend_opts=opts.LegendOpts(

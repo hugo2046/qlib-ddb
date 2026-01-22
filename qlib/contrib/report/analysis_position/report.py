@@ -2,7 +2,7 @@
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-17 00:35:10
 LastEditors: shen.lan123@gmail.com
-LastEditTime: 2026-01-20 10:29:55
+LastEditTime: 2026-01-22 14:47:21
 Description: pyecharts重构
 '''
 import pandas as pd
@@ -188,6 +188,7 @@ def _report_figure(df: pd.DataFrame) -> list:
         height=1200,
         width="100%",
         title="Backtest Analysis Report",
+        title_pos_left="center",
     )
 
     _subplot_kwargs = dict(
