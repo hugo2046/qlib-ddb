@@ -2,7 +2,7 @@
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-16 16:57:25
 LastEditors: shen.lan123@gmail.com
-LastEditTime: 2026-01-19 16:52:53
+LastEditTime: 2026-01-22 23:32:41
 Description: pyecharts重构画图
 '''
 import math
@@ -35,66 +35,34 @@ class _JupyterEnvironmentDetector:
     """
 
     _detected_type = None
-    _js_loaded = False
-
+    _is_loaded = False
+    _env_type = None
+        
     @classmethod
-    def _is_jupyter_lab(cls) -> bool:
-        """检测是否在 Jupyter Lab 环境中
+    def _detect_from_process_tree(cls) -> Optional[str]:
+        """从进程树中检测 Jupyter 环境
 
-        使用启发式方法检测:
-        1. 检查环境中是否只安装了 jupyterlab (没有 notebook)
-        2. 如果两者都安装,默认使用 notebook 模式 (兼容性更好)
-        """
-        try:
-            # 检查是否只安装了 jupyterlab 而没有 notebook
-            import importlib
-            jupyterlab_spec = importlib.util.find_spec('jupyterlab')
-            notebook_spec = importlib.util.find_spec('notebook')
-
-            # 如果只有 jupyterlab,没有 notebook
-            if jupyterlab_spec is not None and notebook_spec is None:
-                return True
-
-            # 如果两者都有,默认认为不是 Lab (更保守的策略)
-            # 用户可以手动配置 CurrentConfig.NOTEBOOK_TYPE
-            return False
-
-        except ImportError:
-            return False
-
-    @classmethod
-    def detect_environment(cls) -> str:
-        """检测 Jupyter 环境类型
+        使用 psutil 向上遍历进程树，查找 jupyter-lab 或 jupyter-notebook 进程。
+        这是最可靠的检测方法，因为它直接检查父进程。
 
         Returns:
-            str: 'jupyter_lab', 'jupyter_notebook', 或 'unknown'
+            "jupyter_lab", "jupyter_notebook", 或 None
         """
-        if cls._detected_type is not None:
-            return cls._detected_type
-
         try:
-            from IPython import get_ipython
-            ipython = get_ipython()
-
-            if ipython is None:
-                cls._detected_type = 'unknown'
-                return cls._detected_type
-
-            if not hasattr(ipython, 'kernel'):
-                cls._detected_type = 'unknown'
-                return cls._detected_type
-
-            # 检测 Jupyter Lab (保守策略)
-            if cls._is_jupyter_lab():
-                cls._detected_type = 'jupyter_lab'
-            else:
-                # 默认认为是 notebook (兼容性最好)
-                cls._detected_type = 'jupyter_notebook'
-
+            import psutil
         except ImportError:
-            cls._detected_type = 'unknown'
+            raise ImportError("自动检测需要 psutil 库，请先安装：pip install psutil")
+        
+        try:
+            cls._env_type = psutil.Process().parent().name()
+            return cls._env_type
 
-        return cls._detected_type
+        except (ImportError, Exception):
+            # psutil 不可用或检测失败
+            raise ValueError("通过检查进程树检测 Jupyter 环境时出错。")
+
+
+
 
     @classmethod
     def configure_pyecharts(cls):
@@ -103,30 +71,27 @@ class _JupyterEnvironmentDetector:
         对于 Jupyter Lab 环境,需要设置 CurrentConfig.NOTEBOOK_TYPE。
         该方法会自动检测环境并进行配置。
         """
-        env_type = cls.detect_environment()
+        if cls._is_loaded:
+            return 
+        env_type = cls._detect_from_process_tree()
 
-        if env_type == 'jupyter_lab':
+        if env_type == 'jupyter-lab':
             try:
                 from pyecharts.globals import CurrentConfig, NotebookType
+                CurrentConfig.ONLINE_HOST = "https://assets.pyecharts.org/assets/"
                 CurrentConfig.NOTEBOOK_TYPE = NotebookType.JUPYTER_LAB
             except ImportError:
                 pass  # pyecharts 未安装或版本不支持
 
     @classmethod
-    def load_javascript_if_needed(cls):
+    def load_javascript_if_needed(cls,chart):
         """在需要时加载 pyecharts JavaScript
 
         对于 Jupyter Lab,首次渲染前建议调用 load_javascript()。
         该方法会确保只加载一次。
         """
-        if cls._js_loaded:
-            return
-
-        env_type = cls.detect_environment()
-
-        if env_type == 'jupyter_lab':
-            # 标记已加载 (实际的 JavaScript 加载会在首次 render_notebook 时自动发生)
-            cls._js_loaded = True
+        if cls._env_type=='jupyter-lab':
+            chart.load_javascript()
 
 
 # ============================================================================
@@ -309,12 +274,11 @@ class BaseGraph:
         _JupyterEnvironmentDetector.configure_pyecharts()
 
         # 尝试加载 JavaScript (对于 Jupyter Lab)
-        _JupyterEnvironmentDetector.load_javascript_if_needed()
-
         for _chart in figure_list:
             if hasattr(_chart, "render_notebook"):
                 try:
                     from IPython.display import display as ipy_display
+                    _JupyterEnvironmentDetector.load_javascript_if_needed(_chart)
                     rendered = _chart.render_notebook()
                     ipy_display(rendered)
                 except ImportError:
