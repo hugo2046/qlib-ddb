@@ -16,7 +16,7 @@ from pyecharts.charts import Line, Bar, Grid
 from pyecharts import options as opts
 
 # 引入我们封装好的 graph 组件 (请确保 graph.py 路径正确)
-from qlib.contrib.report.graph import SubplotsGraph, ScatterGraph, BarGraph, DistplotGraph
+from qlib.contrib.report.graph import BaseGraph, ScatterGraph, BarGraph, DistplotGraph
 
 # ==============================================================================
 # 私有辅助函数 (子组件重构)
@@ -144,9 +144,9 @@ def _pred_ic(
     )
     
     figs = [graph_ts.figure, graph_dist.figure]
-    
+
     if show_notebook:
-        SubplotsGraph.show_graph_in_notebook(figs)
+        BaseGraph.show_graph_in_notebook(figs)
     return figs
 
 
@@ -231,9 +231,9 @@ def model_performance_graph(
     
     # 汇总所有图表对象
     all_figs = [fig_group] + figs_ic + [fig_ac]
-    
+
     # 统一显示
     if show_notebook:
-        SubplotsGraph.show_graph_in_notebook(all_figs)
-        
+        BaseGraph.show_graph_in_notebook(all_figs)
+
     return all_figs
