@@ -2,22 +2,22 @@
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-16 16:57:25
 LastEditors: shen.lan123@gmail.com
-LastEditTime: 2026-01-22 23:32:41
+LastEditTime: 2026-01-25 21:00:00
 Description: pyecharts重构画图
 '''
-import math
 import importlib
+import math
 import os
+from typing import Any, Iterable, List, Optional
+
 import numpy as np
 import pandas as pd
-from typing import Iterable, List, Any, Optional
-
-# 引入 Pyecharts 组件
-from pyecharts.charts import Line, Bar, HeatMap, Grid
 from pyecharts import options as opts
-from pyecharts.globals import ThemeType
+# 引入 Pyecharts 组件
+from pyecharts.charts import Bar, Grid, HeatMap, Line
 from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
-
+from pyecharts.globals import ThemeType
+from scipy.stats import gaussian_kde
 
 # ============================================================================
 # Jupyter 环境检测与适配
@@ -192,6 +192,119 @@ def get_axis_percent_formatter(decimals: int = 0) -> str:
     """
     return f"function(value) {{ return (value * 100).toFixed({decimals}) + ' %'; }}"
 
+
+def get_number_formatter(decimals: int = 2, use_comma: bool = True) -> str:
+    """生成 Tooltip 数字格式化 JavaScript 代码
+
+    该函数生成一段 JavaScript 代码，用于 ECharts Tooltip 的 formatter 配置。
+    支持自动处理 trigger="axis" (params 为数组) 和 trigger="item" (params 为对象) 两种模式。
+    数值会保留指定小数位，并可选择是否使用千分位分隔符。
+
+    .. note::
+        此函数返回的是 JavaScript 函数字符串，需要配合 :class:`pyecharts.commons.utils.JsCode` 使用。
+        适用于普通数值（非百分比）的格式化显示。
+
+    Args:
+        decimals (int): 小数位数，默认为 2 位。例如：
+            - decimals=0: 显示为 "1,234"
+            - decimals=2: 显示为 "1,234.57"
+            - decimals=4: 显示为 "1,234.5678"
+        use_comma (bool): 是否使用千分位分隔符，默认为 True。
+            - True: "1,234.57"
+            - False: "1234.57"
+
+    Returns:
+        str: JavaScript 函数字符串，可直接传递给 :class:`~pyecharts.options.TooltipOpts` 的 formatter 参数。
+
+    Raises:
+        无异常
+
+    Example:
+        >>> from pyecharts.commons.utils import JsCode
+        >>> from pyecharts import options as opts
+        >>>
+        >>> # 方式 1: 直接使用字符串（BaseGraph 会自动检测并转换为 JsCode）
+        >>> tooltip_formatter = get_number_formatter(decimals=2, use_comma=True)
+        >>>
+        >>> # 方式 2: 显式包装为 JsCode（推荐）
+        >>> tooltip_opts = opts.TooltipOpts(
+        ...     trigger="axis",
+        ...     formatter=JsCode(get_number_formatter(decimals=2))
+        ... )
+        >>>
+        >>> # 在 graph_kwargs 中使用
+        >>> graph_kwargs = {
+        ...     "tooltip_formatter": JsCode(get_number_formatter(decimals=4))
+        ... }
+
+    See Also:
+        :func:`get_percent_formatter`: 生成百分比格式化器
+        :func:`get_axis_percent_formatter`: 生成坐标轴百分比格式化器
+        :func:`get_axis_number_formatter`: 生成坐标轴数字格式化器
+    """
+    if use_comma:
+        # 使用千分位分隔符
+        return f"function(params){{var res=params[0].name+'<br/>';for(var i=0;i<params.length;i++){{var val=params[i].value;if(Array.isArray(val)){{val=val[1];}}var num=Number(val).toFixed({decimals});var parts=num.split('.');parts[0]=parts[0].replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');var formatted=parts.join('.');res+=params[i].marker+params[i].seriesName+': '+formatted+'<br/>';}}return res;}}"
+    else:
+        # 不使用千分位分隔符
+        return f"function(params){{var res=params[0].name+'<br/>';for(var i=0;i<params.length;i++){{var val=params[i].value;if(Array.isArray(val)){{val=val[1];}}var num=Number(val).toFixed({decimals});res+=params[i].marker+params[i].seriesName+': '+num+'<br/>';}}return res;}}"
+
+
+def get_axis_number_formatter(decimals: int = 2, use_comma: bool = True) -> str:
+    """生成坐标轴数字格式化 JavaScript 代码
+
+    该函数生成一段 JavaScript 代码，用于 ECharts 坐标轴标签的 formatter 配置。
+    数值会保留指定小数位，并可选择是否使用千分位分隔符。
+
+    .. note::
+        此函数返回的是 JavaScript 函数字符串，需要配合 :class:`pyecharts.commons.utils.JsCode` 使用。
+        适用于 Y 轴或 X 轴标签的数字显示。
+
+    Args:
+        decimals (int): 小数位数，默认为 2 位。例如：
+            - decimals=0: 显示为 "1,234"（整数）
+            - decimals=1: 显示为 "1,234.6"
+            - decimals=2: 显示为 "1,234.57"
+        use_comma (bool): 是否使用千分位分隔符，默认为 True。
+            - True: "1,234.57"
+            - False: "1234.57"
+
+    Returns:
+        str: JavaScript 函数字符串，可直接传递给 :class:`~pyecharts.options.LabelOpts` 的 formatter 参数。
+
+    Raises:
+        无异常
+
+    Example:
+        >>> from pyecharts.commons.utils import JsCode
+        >>> from pyecharts import options as opts
+        >>>
+        >>> # 方式 1: 在 graph_kwargs 中使用
+        >>> graph_kwargs = {
+        ...     "axis_formatter": JsCode(get_axis_number_formatter(decimals=0))
+        ... }
+        >>>
+        >>> # 方式 2: 直接配置到 AxisOpts
+        >>> yaxis_opts = opts.AxisOpts(
+        ...     is_scale=True,
+        ...     axislabel_opts=opts.LabelOpts(
+        ...         formatter=JsCode(get_axis_number_formatter(decimals=2))
+        ...     )
+        ... )
+
+    See Also:
+        :func:`get_number_formatter`: 生成 Tooltip 数字格式化器
+        :func:`get_axis_percent_formatter`: 生成坐标轴百分比格式化器
+        :meth:`BaseGraph._normalize_formatter`: 智能检测并转换 formatter
+    """
+    if use_comma:
+        # 使用千分位分隔符
+        return f"function(value) {{ var num = Number(value).toFixed({decimals}); var parts = num.split('.'); parts[0] = parts[0].replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ','); return parts.join('.'); }}"
+    else:
+        # 不使用千分位分隔符
+        return f"function(value) {{ return Number(value).toFixed({decimals}); }}"
+
+
 class BaseGraph:
     _name = None
 
@@ -353,7 +466,7 @@ class BaseGraph:
         # 1. 获取基础配置
         is_show_legend = self._graph_kwargs.get("is_show_legend", True)
         legend_pos_top = self._graph_kwargs.get("legend_pos_top", "5%")
-        legend_pos_left = self._graph_kwargs.get("legend_pos_left", None)
+        legend_pos_left = self._graph_kwargs.get("legend_pos_left", "0%")
         legend_pos_right = self._graph_kwargs.get("legend_pos_right", None)
         legend_orient = self._graph_kwargs.get("legend_orient", "horizontal")
         
@@ -374,7 +487,7 @@ class BaseGraph:
         self.chart.set_global_opts(
             title_opts=opts.TitleOpts(
                 title=self._layout.get("title", ""),
-                pos_left=self._layout.get("title_pos_left", "auto") # <--- 支持标题位置配置
+                pos_left=self._layout.get("title_pos_left", "center")  # <--- 默认居中
             ),
             tooltip_opts=opts.TooltipOpts(
                 trigger="axis",
@@ -414,26 +527,40 @@ class ScatterGraph(BaseGraph):
             raw_data = self._df[col].tolist()
             # [Pure] 仅负责处理 NaN
             y_data = [x if pd.notna(x) else None for x in raw_data]
-            
+
             final_name = name
 
             areastyle_opts = None
             if self._graph_kwargs.get("fill") == "tozeroy":
                 areastyle_opts = opts.AreaStyleOpts(opacity=0.3)
-            
+
             markarea_opts = self._graph_kwargs.get("markarea_opts", None)
             mode = self._graph_kwargs.get("mode", "lines")
             is_symbol_show = "markers" in mode
-            
-            self.chart.add_yaxis(
-                series_name=final_name,
-                y_axis=y_data,
-                is_symbol_show=is_symbol_show,
-                areastyle_opts=areastyle_opts,
-                markarea_opts=markarea_opts,
-                label_opts=opts.LabelOpts(is_show=False),
-                is_smooth=False,
-            )
+
+            # 支持自定义颜色（通过 series_colors 字典传递）
+            series_colors = self._graph_kwargs.get("series_colors", {})
+            custom_color = series_colors.get(final_name, None)
+
+            # 构建基础参数
+            add_yaxis_kwargs = {
+                "series_name": final_name,
+                "y_axis": y_data,
+                "is_symbol_show": is_symbol_show,
+                "areastyle_opts": areastyle_opts,
+                "markarea_opts": markarea_opts,
+                "label_opts": opts.LabelOpts(is_show=False),
+                "is_smooth": False,
+            }
+
+            # 如果指定了颜色，设置 linestyle_opts（Line 图表使用 linestyle_opts）
+            # 同时设置 itemstyle_opts 以确保图例颜色正确显示
+            if custom_color is not None:
+                add_yaxis_kwargs["linestyle_opts"] = opts.LineStyleOpts(color=custom_color)
+                # itemstyle_opts 确保图例、标记点等元素使用相同颜色
+                add_yaxis_kwargs["itemstyle_opts"] = opts.ItemStyleOpts(color=custom_color)
+
+            self.chart.add_yaxis(**add_yaxis_kwargs)
 
 
 class BarGraph(BaseGraph):
@@ -463,25 +590,105 @@ class BarGraph(BaseGraph):
 
 
 class DistplotGraph(BaseGraph):
+    """
+    分布图：直方图 + 核密度估计曲线 (模拟 Plotly 的 distplot)
+    """
     _name = "distplot"
+
     def _init_chart(self):
+        # 初始化一个 Bar 作为基础，因为 Bar 拥有 X 轴
         self.chart = Bar()
-        _t_df = self._df.dropna()
+        
+        # 获取配置参数
+        bin_size = self._graph_kwargs.get("bin_size", None) 
+        
+        # 1. 计算所有数据的范围，确保 X 轴对齐 (统一 Bins)
+        _min_val, _max_val = float("inf"), float("-inf")
+        valid_dfs = {}
+        
         for col, name in self._name_dict.items():
-            data = _t_df[col].values
-            hist, bin_edges = np.histogram(data, bins=50)
-            x_data = [f"{e:.2f}" for e in bin_edges[:-1]]
-            if not self.chart.options.get("xAxis"):
-                 self.chart.add_xaxis(x_data)
+            data = self._df[col].dropna().values
+            if len(data) == 0: continue
+            _min_val = min(_min_val, data.min())
+            _max_val = max(_max_val, data.max())
+            valid_dfs[name] = data
+
+        if not valid_dfs:
+            return
+
+        # 确定 bins
+        if bin_size:
+            bins = np.arange(np.floor(_min_val), np.ceil(_max_val) + bin_size, bin_size)
+        else:
+            bins = 50 # 默认分50份
+
+        # 2. 生成 X 轴坐标 (使用 numpy histogram 的 bin edges)
+        combined_data = np.concatenate(list(valid_dfs.values()))
+        hist_total, bin_edges = np.histogram(combined_data, bins=bins)
+        
+        # X 轴显示为 bin 的中心点
+        x_axis_str = [f"{(bin_edges[i] + bin_edges[i+1])/2:.4f}" for i in range(len(bin_edges)-1)]
+        
+        self.chart.add_xaxis(x_axis_str)
+        
+        # 3. 循环添加系列
+        for name, data in valid_dfs.items():
+            # A. 直方图数据
+            # density=True 让直方图的高度归一化，以便和 KDE 曲线匹配
+            hist, _ = np.histogram(data, bins=bin_edges, density=True)
+            
+            # 添加直方图 (Bar)
             self.chart.add_yaxis(
-                series_name=name,
+                series_name=f"{name} (Hist)",
                 y_axis=hist.tolist(),
-                category_gap=0,
+                category_gap=0, # 让柱子紧挨着
                 label_opts=opts.LabelOpts(is_show=False),
-                itemstyle_opts=opts.ItemStyleOpts(opacity=0.6)
+                itemstyle_opts=opts.ItemStyleOpts(opacity=0.3), # 半透明
+                z=0 # 图层靠后
             )
-
-
+            
+            # B. 核密度估计 (KDE Line)
+            try:
+                kde = gaussian_kde(data)
+                # 在 X 轴对应的点上计算 PDF 值
+                x_points = (bin_edges[:-1] + bin_edges[1:]) / 2
+                y_kde = kde(x_points)
+                
+                # 叠加 Line 图
+                line = (
+                    Line()
+                    .add_xaxis(x_axis_str)
+                    .add_yaxis(
+                        series_name=f"{name} (KDE)",
+                        y_axis=y_kde.tolist(),
+                        is_smooth=True, # 平滑曲线
+                        symbol="none",  # 不显示点
+                        label_opts=opts.LabelOpts(is_show=False),
+                        z=10 # 图层靠前
+                    )
+                )
+                self.chart.overlap(line)
+            except Exception:
+                pass
+    
+    def _apply_global_opts(self):
+        """Distplot 特有的全局配置"""
+        if not self.chart:
+            return
+        super()._apply_global_opts()
+        # 强制更新一些适合 Distplot 的配置
+        self.chart.set_global_opts(
+            xaxis_opts=opts.AxisOpts(
+                type_="category", 
+                is_scale=True, 
+                axislabel_opts=opts.LabelOpts(rotate=45),
+                name_location="middle",
+                name_gap=30
+            ),
+            # Distplot 通常不需要具体数值的 Tooltip，或者需要特殊的
+            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow")
+        )
+        
 class HeatmapGraph(BaseGraph):
     _name = "heatmap"
     def _init_chart(self):
@@ -765,7 +972,7 @@ class SubplotsGraph:
             if shared_xaxes and not is_last_row:
                 xaxis_show_label = False
             
-            final_legend_left = legend_pos_left_custom if legend_pos_left_custom is not None else col_cfg["pos_left"]
+            final_legend_left = legend_pos_left_custom if legend_pos_left_custom is not None else "0%"  # <--- 默认在绘图区外左侧
             if legend_pos_right_custom is not None:
                 final_legend_left = None
             
@@ -843,3 +1050,4 @@ class SubplotsGraph:
     @property
     def figure(self):
         return self._grid
+
