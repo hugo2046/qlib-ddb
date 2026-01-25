@@ -3,9 +3,9 @@
 
 import pandas as pd
 
-from ..graph import ScatterGraph
+from ..graph import ScatterGraph,get_number_formatter
 from ..utils import guess_plotly_rangebreaks
-
+from pyecharts.commons.utils import JsCode 
 
 def _get_score_ic(pred_label: pd.DataFrame):
     """
@@ -15,12 +15,18 @@ def _get_score_ic(pred_label: pd.DataFrame):
     """
     concat_data = pred_label.copy()
     concat_data.dropna(axis=0, how="any", inplace=True)
-    _ic = concat_data.groupby(level="datetime").apply(lambda x: x["label"].corr(x["score"]))
-    _rank_ic = concat_data.groupby(level="datetime").apply(lambda x: x["label"].corr(x["score"], method="spearman"))
-    return pd.DataFrame({"ic": _ic, "rank_ic": _rank_ic})
+    _ic = concat_data.groupby(level="datetime").apply(
+        lambda x: x["label"].corr(x["score"])
+    )
+    _rank_ic = concat_data.groupby(level="datetime").apply(
+        lambda x: x["label"].corr(x["score"], method="spearman")
+    )
+    return pd.DataFrame({"IC": _ic, "Rank IC": _rank_ic})
 
 
-def score_ic_graph(pred_label: pd.DataFrame, show_notebook: bool = True, **kwargs) -> [list, tuple]:
+def score_ic_graph(
+    pred_label: pd.DataFrame, show_notebook: bool = True, **kwargs
+) -> [list, tuple]:
     """score IC
 
         Example:
@@ -59,9 +65,20 @@ def score_ic_graph(pred_label: pd.DataFrame, show_notebook: bool = True, **kwarg
         _ic_df,
         layout=dict(
             title="Score IC",
-            xaxis=dict(tickangle=45, rangebreaks=kwargs.get("rangebreaks", guess_plotly_rangebreaks(_ic_df.index))),
+            xaxis=dict(
+                tickangle=45,
+                rangebreaks=kwargs.get(
+                    "rangebreaks", guess_plotly_rangebreaks(_ic_df.index)
+                ),
+            ),
         ),
-        graph_kwargs={"mode": "lines+markers"},
+        graph_kwargs={
+            "mode": "lines+markers",
+            "legend_pos_left": "75%",  # 图例在绘图区外左侧
+            "legend_pos_top": "4%",  # 图例在顶部，避开标题区域
+            "tooltip_formatter": JsCode(get_number_formatter(2)),
+            "series_colors": {"Rank IC": "#f0811e"},  # Rank IC 设置为橙色
+        },
     ).figure
     if show_notebook:
         ScatterGraph.show_graph_in_notebook([_figure])
