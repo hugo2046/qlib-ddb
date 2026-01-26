@@ -12,7 +12,14 @@ import pandas as pd
 from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
 
 from ...evaluate import risk_analysis
-from ..graph import SubplotsGraph, ScatterGraph, get_percent_formatter, get_axis_percent_formatter  # [New] 导入工具函数
+from ..graph import (
+    SubplotsGraph,
+    ScatterGraph,
+    get_percent_formatter,
+    get_axis_percent_formatter,
+    get_number_formatter,  # [New]
+)  # [New] 导入工具函数
+from ..display_config import RISK_ANALYSIS_SUBPLOTS_CONFIG, MONTHLY_RISK_SUBPLOTS_CONFIG
 
 
 def _get_risk_analysis_data_with_report(
@@ -141,19 +148,7 @@ def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
     # use echarts
     _figure = SubplotsGraph(
         _get_all_risk_analysis(analysis_df),
-        kind_map=dict(
-            kind="BarGraph",
-            kwargs={
-                "xy_reverse": False,  # 纵向
-                "is_show_label": False,  # 隐藏数据标签
-                "is_show_legend": False,  # [Fix] 隐藏图例
-                "axis_formatter": JsCode(get_axis_percent_formatter(2)),  # Y轴显示 %
-                "tooltip_formatter": JsCode(get_percent_formatter(4)),  # 数据乘以 100
-                # "bar_max_width": None         # 不限制宽度，让柱子变粗
-            },
-        ),
-        subplots_kwargs={"rows": 4, "cols": 1, "row_width": [1] * 4},
-        layout={"height": 1000},
+        config=RISK_ANALYSIS_SUBPLOTS_CONFIG,
     ).figure
     return (_figure,)
 
@@ -169,19 +164,21 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
     if report_normal_df is None:
         return []
 
-    _monthly_df:pd.DataFrame  = _get_monthly_risk_analysis_with_report(
+    _monthly_df: pd.DataFrame = _get_monthly_risk_analysis_with_report(
         report_normal_df=report_normal_df,
     )
 
     # 转为宽表格式，index-date,columns-(metric_feature, risk)
-    df:pd.DataFrame = _monthly_df.set_index("date", append=True)["risk"].unstack(level=[0, 1]).swaplevel(
-        0, 1, axis=1
+    df: pd.DataFrame = (
+        _monthly_df.set_index("date", append=True)["risk"]
+        .unstack(level=[0, 1])
+        .swaplevel(0, 1, axis=1)
     )
-    
+
     # 准备容器
     processed_dfs = []
     sub_graph_data = []
-    
+
     base_kwargs = {
         "mode": "lines+markers",
         "legend_pos_left": None,
@@ -214,54 +211,51 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
             current_kwargs["axis_formatter"] = JsCode(get_axis_percent_formatter(2))
 
             # unit_suffix = " (%)"
-        
+
         rename_map = {col: f"{feature}:{col}" for col in sub_df.columns}
         sub_df.rename(columns=rename_map, inplace=True)
-        
+
         # 收集数据
         processed_dfs.append(sub_df)
-        
+
         for unique_col in sub_df.columns:
             original_source_name = unique_col.split(":")[-1]
             display_name = original_source_name.replace("_", " ").title()
             # display_name += unit_suffix
             sub_graph_data.append(
-                (unique_col, dict(
-                    row=row_idx, 
-                    col=1, 
-                    title=feature,
-                    name=display_name, # 图例显示内容
-                    kind="ScatterGraph", 
-                    graph_kwargs=current_kwargs
-                ))
+                (
+                    unique_col,
+                    dict(
+                        row=row_idx,
+                        col=1,
+                        title=feature,
+                        name=display_name,  # 图例显示内容
+                        kind="ScatterGraph",
+                        graph_kwargs=current_kwargs,
+                    ),
+                )
             )
-        
+
         # 4. 合并数据并绘图
     if not processed_dfs:
         return []
-        
+
     final_df = pd.concat(processed_dfs, axis=1)
 
+    # [Change] 使用 config 并仅覆盖动态参数
     _figure = SubplotsGraph(
         final_df,
         sub_graph_data=sub_graph_data,
+        config=MONTHLY_RISK_SUBPLOTS_CONFIG,
         subplots_kwargs={
-            "cols": 1, 
             "rows": len(processed_dfs),
-            "shared_xaxes": True,
             "row_width": [1] * len(processed_dfs),
-            "vertical_spacing": 0.05
+            "vertical_spacing": 0.05,
         },
-        layout={
-            "height": 1000, 
-            "title": "Monthly Risk Analysis",
-            "width": "100%",
-            "title_pos_left": "center"
-        }
     ).figure
-    
+
     return (_figure,)
-        
+
     # for _feature in ["annualized_return", "max_drawdown", "information_ratio", "std"]:
     #     _temp_df = _get_monthly_analysis_with_feature(_monthly_df, _feature)
     #     yield ScatterGraph(

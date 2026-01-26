@@ -1,10 +1,11 @@
-'''
+"""
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2026-01-16 16:57:25
 LastEditors: shen.lan123@gmail.com
 LastEditTime: 2026-01-25 21:00:00
 Description: pyecharts重构画图
-'''
+"""
+
 import importlib
 import math
 import os
@@ -13,6 +14,7 @@ from typing import Any, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 from pyecharts import options as opts
+
 # 引入 Pyecharts 组件
 from pyecharts.charts import Bar, Grid, HeatMap, Line
 from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
@@ -22,6 +24,7 @@ from scipy.stats import gaussian_kde
 # ============================================================================
 # Jupyter 环境检测与适配
 # ============================================================================
+
 
 class _JupyterEnvironmentDetector:
     """Jupyter 环境检测器 (内部类)
@@ -37,7 +40,7 @@ class _JupyterEnvironmentDetector:
     _detected_type = None
     _is_loaded = False
     _env_type = None
-        
+
     @classmethod
     def _detect_from_process_tree(cls) -> Optional[str]:
         """从进程树中检测 Jupyter 环境
@@ -52,7 +55,7 @@ class _JupyterEnvironmentDetector:
             import psutil
         except ImportError:
             raise ImportError("自动检测需要 psutil 库，请先安装：pip install psutil")
-        
+
         try:
             cls._env_type = psutil.Process().parent().name()
             return cls._env_type
@@ -60,9 +63,6 @@ class _JupyterEnvironmentDetector:
         except (ImportError, Exception):
             # psutil 不可用或检测失败
             raise ValueError("通过检查进程树检测 Jupyter 环境时出错。")
-
-
-
 
     @classmethod
     def configure_pyecharts(cls):
@@ -72,31 +72,33 @@ class _JupyterEnvironmentDetector:
         该方法会自动检测环境并进行配置。
         """
         if cls._is_loaded:
-            return 
+            return
         env_type = cls._detect_from_process_tree()
 
-        if env_type == 'jupyter-lab':
+        if env_type == "jupyter-lab":
             try:
                 from pyecharts.globals import CurrentConfig, NotebookType
+
                 CurrentConfig.ONLINE_HOST = "https://assets.pyecharts.org/assets/"
                 CurrentConfig.NOTEBOOK_TYPE = NotebookType.JUPYTER_LAB
             except ImportError:
                 pass  # pyecharts 未安装或版本不支持
 
     @classmethod
-    def load_javascript_if_needed(cls,chart):
+    def load_javascript_if_needed(cls, chart):
         """在需要时加载 pyecharts JavaScript
 
         对于 Jupyter Lab,首次渲染前建议调用 load_javascript()。
         该方法会确保只加载一次。
         """
-        if cls._env_type=='jupyter-lab':
+        if cls._env_type == "jupyter-lab":
             chart.load_javascript()
 
 
 # ============================================================================
 # Pyecharts 工具函数区
 # ============================================================================
+
 
 def get_percent_formatter(decimals: int = 4) -> str:
     """生成 Tooltip 百分比格式化 JavaScript 代码
@@ -309,16 +311,49 @@ class BaseGraph:
     _name = None
 
     def __init__(
-        self, 
-        df: pd.DataFrame = None, 
-        layout: dict = None, 
-        graph_kwargs: dict = None, 
-        name_dict: dict = None, 
-        **kwargs
+        self,
+        df: pd.DataFrame = None,
+        layout: dict = None,
+        graph_kwargs: dict = None,
+        name_dict: dict = None,
+        config: Any = None,  # [Refactor] Add config parameter
+        **kwargs,
     ):
         self._df = df
-        self._layout = dict() if layout is None else layout
-        self._graph_kwargs = dict() if graph_kwargs is None else graph_kwargs
+
+        # [Refactor] Process config
+        config_layout = {}
+        config_graph_kwargs = {}
+
+        if config:
+            # 1. Extract layout params
+            if hasattr(config, "width") and config.width:
+                config_layout["width"] = config.width
+            if hasattr(config, "height") and config.height:
+                config_layout["height"] = config.height
+            if hasattr(config, "title"):
+                # title config mapping might be complex, assuming standard struct
+                pass
+                # BaseGraph usually expects 'title' key in layout for simple string,
+                # or specific title handling properties?
+                # Actually BaseGraph doesn't seem to use 'title' in layout directly in _init_chart?
+                # It depends on subclass implementation.
+                # But let's check config.to_graph_kwargs() logic
+
+            # 2. Extract graph_kwargs
+            if hasattr(config, "to_graph_kwargs"):
+                config_graph_kwargs = config.to_graph_kwargs()
+
+        # Merge layout: kwargs > config
+        self._layout = config_layout
+        if layout:
+            self._layout.update(layout)
+
+        # Merge graph_kwargs: kwargs > config
+        self._graph_kwargs = config_graph_kwargs
+        if graph_kwargs:
+            self._graph_kwargs.update(graph_kwargs)
+
         self._name_dict = name_dict
 
         self.chart = None
@@ -346,16 +381,16 @@ class BaseGraph:
                 graph_class_name = f"{graph_type}Graph"
             else:
                 graph_class_name = graph_type
-            
+
             if graph_class_name in globals():
                 _graph_class = globals()[graph_class_name]
             else:
                 _graph_module = importlib.import_module("qlib.contrib.report.graph")
                 _graph_class = getattr(_graph_module, graph_class_name)
-                
+
         except (AttributeError, ImportError):
             _graph_class = ScatterGraph
-            
+
         return _graph_class(**kwargs)
 
     @staticmethod
@@ -391,13 +426,16 @@ class BaseGraph:
             if hasattr(_chart, "render_notebook"):
                 try:
                     from IPython.display import display as ipy_display
+
                     _JupyterEnvironmentDetector.load_javascript_if_needed(_chart)
                     rendered = _chart.render_notebook()
                     ipy_display(rendered)
                 except ImportError:
                     print("IPython not found, cannot render in notebook.")
             else:
-                print(f"Warning: Object does not have render_notebook() method: {type(_chart)}")
+                print(
+                    f"Warning: Object does not have render_notebook() method: {type(_chart)}"
+                )
 
     @staticmethod
     def _normalize_formatter(formatter):
@@ -469,44 +507,54 @@ class BaseGraph:
         legend_pos_left = self._graph_kwargs.get("legend_pos_left", "0%")
         legend_pos_right = self._graph_kwargs.get("legend_pos_right", None)
         legend_orient = self._graph_kwargs.get("legend_orient", "horizontal")
-        
+
         if legend_pos_right is not None:
             legend_pos_left = None
 
         # [New] 标准化 formatter（支持字符串和 JsCode）
-        axis_formatter = self._normalize_formatter(self._graph_kwargs.get("axis_formatter", None))
-        tooltip_formatter = self._normalize_formatter(self._graph_kwargs.get("tooltip_formatter", None))
+        axis_formatter = self._normalize_formatter(
+            self._graph_kwargs.get("axis_formatter", None)
+        )
+        tooltip_formatter = self._normalize_formatter(
+            self._graph_kwargs.get("tooltip_formatter", None)
+        )
 
         yaxis_opts = opts.AxisOpts(
             is_scale=True,
             axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
-            splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+            splitline_opts=opts.SplitLineOpts(
+                is_show=True,
+                linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+            ),
         )
 
         # 2. 应用配置 (支持 title_pos_left 和 orient)
         self.chart.set_global_opts(
             title_opts=opts.TitleOpts(
                 title=self._layout.get("title", ""),
-                pos_left=self._layout.get("title_pos_left", "center")  # <--- 默认居中
+                pos_left=self._layout.get("title_pos_left", "center"),  # <--- 默认居中
             ),
             tooltip_opts=opts.TooltipOpts(
                 trigger="axis",
                 axis_pointer_type="line",
-                formatter=tooltip_formatter  # [New] 应用 formatter
+                formatter=tooltip_formatter,  # [New] 应用 formatter
             ),
             legend_opts=opts.LegendOpts(
                 is_show=is_show_legend,
                 pos_top=legend_pos_top,
                 pos_left=legend_pos_left,
                 pos_right=legend_pos_right,
-                orient=legend_orient, # <--- 支持图例方向配置
+                orient=legend_orient,  # <--- 支持图例方向配置
             ),
             xaxis_opts=opts.AxisOpts(
                 type_="category",
                 is_scale=True,
-                splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+                splitline_opts=opts.SplitLineOpts(
+                    is_show=True,
+                    linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                ),
             ),
-            yaxis_opts=yaxis_opts
+            yaxis_opts=yaxis_opts,
         )
 
     @property
@@ -556,9 +604,13 @@ class ScatterGraph(BaseGraph):
             # 如果指定了颜色，设置 linestyle_opts（Line 图表使用 linestyle_opts）
             # 同时设置 itemstyle_opts 以确保图例颜色正确显示
             if custom_color is not None:
-                add_yaxis_kwargs["linestyle_opts"] = opts.LineStyleOpts(color=custom_color)
+                add_yaxis_kwargs["linestyle_opts"] = opts.LineStyleOpts(
+                    color=custom_color
+                )
                 # itemstyle_opts 确保图例、标记点等元素使用相同颜色
-                add_yaxis_kwargs["itemstyle_opts"] = opts.ItemStyleOpts(color=custom_color)
+                add_yaxis_kwargs["itemstyle_opts"] = opts.ItemStyleOpts(
+                    color=custom_color
+                )
 
             self.chart.add_yaxis(**add_yaxis_kwargs)
 
@@ -569,9 +621,9 @@ class BarGraph(BaseGraph):
     def _init_chart(self):
         self.chart = Bar()
         x_data = self._df.index.astype(str).tolist()
-        
+
         self.chart.add_xaxis(x_data)
-        
+
         if self._graph_kwargs.get("xy_reverse", False):
             self.chart.reversal_axis()
 
@@ -579,13 +631,13 @@ class BarGraph(BaseGraph):
             raw_data = self._df[col].tolist()
             # [Pure] 仅负责处理 NaN
             y_data = [x if pd.notna(x) else None for x in raw_data]
-            
+
             final_name = name
-            
+
             self.chart.add_yaxis(
                 series_name=final_name,
                 y_axis=y_data,
-                label_opts=opts.LabelOpts(is_show=False)
+                label_opts=opts.LabelOpts(is_show=False),
             )
 
 
@@ -593,22 +645,24 @@ class DistplotGraph(BaseGraph):
     """
     分布图：直方图 + 核密度估计曲线 (模拟 Plotly 的 distplot)
     """
+
     _name = "distplot"
 
     def _init_chart(self):
         # 初始化一个 Bar 作为基础，因为 Bar 拥有 X 轴
         self.chart = Bar()
-        
+
         # 获取配置参数
-        bin_size = self._graph_kwargs.get("bin_size", None) 
-        
+        bin_size = self._graph_kwargs.get("bin_size", None)
+
         # 1. 计算所有数据的范围，确保 X 轴对齐 (统一 Bins)
         _min_val, _max_val = float("inf"), float("-inf")
         valid_dfs = {}
-        
+
         for col, name in self._name_dict.items():
             data = self._df[col].dropna().values
-            if len(data) == 0: continue
+            if len(data) == 0:
+                continue
             _min_val = min(_min_val, data.min())
             _max_val = max(_max_val, data.max())
             valid_dfs[name] = data
@@ -620,40 +674,43 @@ class DistplotGraph(BaseGraph):
         if bin_size:
             bins = np.arange(np.floor(_min_val), np.ceil(_max_val) + bin_size, bin_size)
         else:
-            bins = 50 # 默认分50份
+            bins = 50  # 默认分50份
 
         # 2. 生成 X 轴坐标 (使用 numpy histogram 的 bin edges)
         combined_data = np.concatenate(list(valid_dfs.values()))
         hist_total, bin_edges = np.histogram(combined_data, bins=bins)
-        
+
         # X 轴显示为 bin 的中心点
-        x_axis_str = [f"{(bin_edges[i] + bin_edges[i+1])/2:.4f}" for i in range(len(bin_edges)-1)]
-        
+        x_axis_str = [
+            f"{(bin_edges[i] + bin_edges[i+1])/2:.4f}"
+            for i in range(len(bin_edges) - 1)
+        ]
+
         self.chart.add_xaxis(x_axis_str)
-        
+
         # 3. 循环添加系列
         for name, data in valid_dfs.items():
             # A. 直方图数据
             # density=True 让直方图的高度归一化，以便和 KDE 曲线匹配
             hist, _ = np.histogram(data, bins=bin_edges, density=True)
-            
+
             # 添加直方图 (Bar)
             self.chart.add_yaxis(
                 series_name=f"{name} (Hist)",
                 y_axis=hist.tolist(),
-                category_gap=0, # 让柱子紧挨着
+                category_gap=0,  # 让柱子紧挨着
                 label_opts=opts.LabelOpts(is_show=False),
-                itemstyle_opts=opts.ItemStyleOpts(opacity=0.3), # 半透明
-                z=0 # 图层靠后
+                itemstyle_opts=opts.ItemStyleOpts(opacity=0.3),  # 半透明
+                z=0,  # 图层靠后
             )
-            
+
             # B. 核密度估计 (KDE Line)
             try:
                 kde = gaussian_kde(data)
                 # 在 X 轴对应的点上计算 PDF 值
                 x_points = (bin_edges[:-1] + bin_edges[1:]) / 2
                 y_kde = kde(x_points)
-                
+
                 # 叠加 Line 图
                 line = (
                     Line()
@@ -661,16 +718,16 @@ class DistplotGraph(BaseGraph):
                     .add_yaxis(
                         series_name=f"{name} (KDE)",
                         y_axis=y_kde.tolist(),
-                        is_smooth=True, # 平滑曲线
+                        is_smooth=True,  # 平滑曲线
                         symbol="none",  # 不显示点
                         label_opts=opts.LabelOpts(is_show=False),
-                        z=10 # 图层靠前
+                        z=10,  # 图层靠前
                     )
                 )
                 self.chart.overlap(line)
             except Exception:
                 pass
-    
+
     def _apply_global_opts(self):
         """Distplot 特有的全局配置"""
         if not self.chart:
@@ -679,18 +736,20 @@ class DistplotGraph(BaseGraph):
         # 强制更新一些适合 Distplot 的配置
         self.chart.set_global_opts(
             xaxis_opts=opts.AxisOpts(
-                type_="category", 
-                is_scale=True, 
+                type_="category",
+                is_scale=True,
                 axislabel_opts=opts.LabelOpts(rotate=45),
                 name_location="middle",
-                name_gap=30
+                name_gap=30,
             ),
             # Distplot 通常不需要具体数值的 Tooltip，或者需要特殊的
-            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow")
+            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow"),
         )
-        
+
+
 class HeatmapGraph(BaseGraph):
     _name = "heatmap"
+
     def _init_chart(self):
         self.chart = HeatMap()
         x_axis = self._df.columns.tolist()
@@ -699,7 +758,11 @@ class HeatmapGraph(BaseGraph):
         self.chart.add_yaxis(
             series_name="",
             yaxis_data=y_axis,
-            value=[[i, j, float(self._df.iloc[j, i])] for i in range(len(x_axis)) for j in range(len(y_axis))],
+            value=[
+                [i, j, float(self._df.iloc[j, i])]
+                for i in range(len(x_axis))
+                for j in range(len(y_axis))
+            ],
             label_opts=opts.LabelOpts(is_show=True, position="inside"),
         )
         self.chart.set_global_opts(visualmap_opts=opts.VisualMapOpts(is_show=True))
@@ -707,18 +770,22 @@ class HeatmapGraph(BaseGraph):
 
 class HistogramGraph(BaseGraph):
     _name = "histogram"
+
     def _init_chart(self):
         self.chart = Bar()
         x_data = self._df.index.astype(str).tolist()
         self.chart.add_xaxis(x_data)
         for col, name in self._name_dict.items():
-            y_data = [x * 100 if not pd.isna(x) else None for x in self._df[col].tolist()]
+            y_data = [
+                x * 100 if not pd.isna(x) else None for x in self._df[col].tolist()
+            ]
             self.chart.add_yaxis(
                 series_name=f"{name} (%)",
                 y_axis=y_data,
                 category_gap=0,
-                label_opts=opts.LabelOpts(is_show=False)
+                label_opts=opts.LabelOpts(is_show=False),
             )
+
 
 class SubplotsGraph:
     """
@@ -734,18 +801,61 @@ class SubplotsGraph:
         sub_graph_layout: dict = None,
         sub_graph_data: list = None,
         subplots_kwargs: dict = None,
+        config: Any = None,  # [Refactor] Add config parameter
         **kwargs,
     ):
         self._df = df
-        self._layout = layout or {}
+
+        # [Refactor] Unpack config if provided
+        config_layout = {}
+        config_subplots_kwargs = {}
+        config_kind_map = None
+
+        if config:
+            if hasattr(config, "layout"):
+                config_layout = config.layout
+            if hasattr(config, "subplots_kwargs"):
+                config_subplots_kwargs = config.subplots_kwargs
+            if hasattr(config, "kind_map"):
+                config_kind_map = config.kind_map
+
+        # kwargs takes precedence over config (Merge recursively or shallowly)
+        # Here we perform shallow merge: existing keys in kwargs overwrite config, new keys are added.
+        self._layout = config_layout.copy()
+        if layout:
+            self._layout.update(layout)
+
         self._sub_graph_layout = sub_graph_layout or {}
 
-        self._kind_map = kind_map
+        # Merge kind_map
+        # Determine base kind_map
+        base_kind_map = (
+            config_kind_map
+            if config_kind_map is not None
+            else dict(kind="ScatterGraph", kwargs=dict())
+        )
+
+        if kind_map:
+            self._kind_map = base_kind_map.copy()
+            if "kind" in kind_map:
+                self._kind_map["kind"] = kind_map["kind"]
+            if "kwargs" in kind_map:
+                # Update kwargs
+                if "kwargs" not in self._kind_map:
+                    self._kind_map["kwargs"] = {}
+                self._kind_map["kwargs"].update(kind_map["kwargs"])
+        else:
+            self._kind_map = base_kind_map
+
         if self._kind_map is None:
             self._kind_map = dict(kind="ScatterGraph", kwargs=dict())
 
-        self._subplots_kwargs = subplots_kwargs
-        if self._subplots_kwargs is None:
+        # Merge subplots_kwargs
+        self._subplots_kwargs = config_subplots_kwargs.copy()
+        if subplots_kwargs:
+            self._subplots_kwargs.update(subplots_kwargs)
+
+        if not self._subplots_kwargs:  # Empty dict is falsy
             self._init_subplots_kwargs()
 
         # 计算行列数
@@ -756,7 +866,7 @@ class SubplotsGraph:
             if self._df is not None:
                 self.__rows = math.ceil(len(self._df.columns) / self.__cols)
             else:
-                self.__rows = 1 # 默认值
+                self.__rows = 1  # 默认值
 
         self._sub_graph_data = sub_graph_data
         # [Fix] 只有在 sub_graph_data 未提供且 df 存在时，才自动生成
@@ -764,7 +874,7 @@ class SubplotsGraph:
             self._init_sub_graph_data()
 
         self._grid = None
-        
+
         # [Fix] 确保有数据可画
         if self._sub_graph_data:
             self._init_figure()
@@ -801,53 +911,54 @@ class SubplotsGraph:
     def _init_figure(self):
         canvas_height = self._layout.get("height", 1000)
         canvas_width = self._layout.get("width", "100%")
-        if isinstance(canvas_width, int): canvas_width = f"{canvas_width}px"
-        if isinstance(canvas_height, int): canvas_height = f"{canvas_height}px"
+        if isinstance(canvas_width, int):
+            canvas_width = f"{canvas_width}px"
+        if isinstance(canvas_height, int):
+            canvas_height = f"{canvas_height}px"
 
         self._grid = Grid(
             init_opts=opts.InitOpts(
-                width=canvas_width, 
-                height=canvas_height,
-                theme=ThemeType.WHITE
+                width=canvas_width, height=canvas_height, theme=ThemeType.WHITE
             )
         )
 
         row_width_list = self._subplots_kwargs.get("row_width", [1] * self.__rows)
         if len(row_width_list) < self.__rows:
-             row_width_list = [1] * (self.__rows - len(row_width_list)) + row_width_list
-        
+            row_width_list = [1] * (self.__rows - len(row_width_list)) + row_width_list
+
         row_weights = list(reversed(row_width_list))
         total_weight = sum(row_weights)
         vertical_spacing = self._subplots_kwargs.get("vertical_spacing", 0.02)
-        
+
         margin_top_pct = 5
         margin_bottom_pct = 5
         spacing_pct = vertical_spacing * 100
-        available_height_pct = 100 - margin_top_pct - margin_bottom_pct - (self.__rows - 1) * spacing_pct
-        
+        available_height_pct = (
+            100 - margin_top_pct - margin_bottom_pct - (self.__rows - 1) * spacing_pct
+        )
+
         row_configs = {}
         current_pos = margin_top_pct
-        
+
         for i, weight in enumerate(row_weights):
             row_idx = i + 1
             h_pct = (weight / total_weight) * available_height_pct
-            row_configs[row_idx] = {
-                "pos_top": f"{current_pos}%",
-                "height": f"{h_pct}%"
-            }
+            row_configs[row_idx] = {"pos_top": f"{current_pos}%", "height": f"{h_pct}%"}
             current_pos += h_pct + spacing_pct
 
         col_width_list = self._subplots_kwargs.get("col_width", [1] * self.__cols)
         if len(col_width_list) < self.__cols:
             col_width_list = col_width_list + [1] * (self.__cols - len(col_width_list))
-        
+
         total_col_weight = sum(col_width_list)
         horizontal_spacing = self._subplots_kwargs.get("horizontal_spacing", 0.02)
         margin_left_pct = 5
         margin_right_pct = 5
         h_spacing_pct = horizontal_spacing * 100
-        available_width_pct = 100 - margin_left_pct - margin_right_pct - (self.__cols - 1) * h_spacing_pct
-        
+        available_width_pct = (
+            100 - margin_left_pct - margin_right_pct - (self.__cols - 1) * h_spacing_pct
+        )
+
         col_configs = {}
         current_left = margin_left_pct
         for i, weight in enumerate(col_width_list):
@@ -855,17 +966,19 @@ class SubplotsGraph:
             w_pct = (weight / total_col_weight) * available_width_pct
             col_configs[col_idx] = {
                 "pos_left": f"{current_left}%",
-                "width": f"{w_pct}%"
+                "width": f"{w_pct}%",
             }
             current_left += w_pct + h_spacing_pct
 
         cell_groups = {}
         for column_name, column_map in self._sub_graph_data:
-            if not isinstance(column_name, str): continue
+            if not isinstance(column_name, str):
+                continue
             row = column_map["row"]
             col = column_map.get("col", 1)
             key = (row, col)
-            if key not in cell_groups: cell_groups[key] = []
+            if key not in cell_groups:
+                cell_groups[key] = []
             cell_groups[key].append((column_name, column_map))
 
         shared_xaxes = self._subplots_kwargs.get("shared_xaxes", False)
@@ -873,17 +986,21 @@ class SubplotsGraph:
 
         for (row, col), items in cell_groups.items():
             first_item_map = items[0][1]
-            kind = first_item_map.get("kind", self._kind_map.get("kind", "ScatterGraph"))
-            
+            kind = first_item_map.get(
+                "kind", self._kind_map.get("kind", "ScatterGraph")
+            )
+
             chart = Bar() if "Bar" in kind else Line()
-            
+
             chart.add_xaxis(x_axis_data)
 
             # 获取参数
             final_kwargs_sample = self._kind_map.get("kwargs", {}).copy()
             final_kwargs_sample.update(first_item_map.get("graph_kwargs", {}))
-            
-            is_xy_reverse = "Bar" in kind and final_kwargs_sample.get("xy_reverse", False)
+
+            is_xy_reverse = "Bar" in kind and final_kwargs_sample.get(
+                "xy_reverse", False
+            )
 
             # [New] 标准化 formatter（支持字符串和 JsCode）
             axis_formatter = BaseGraph._normalize_formatter(
@@ -898,25 +1015,27 @@ class SubplotsGraph:
             legend_pos_left_custom = final_kwargs_sample.get("legend_pos_left", None)
             legend_pos_right_custom = final_kwargs_sample.get("legend_pos_right", None)
             legend_pos_top_custom = final_kwargs_sample.get("legend_pos_top", None)
-            
+
             # [Fix 1: Title Position]
             # 动态计算 Title 的位置，使其位于子图上方，而不是默认的 top="auto"
-            title_top_offset = final_kwargs_sample.get("title_top_offset", -4) # 默认向上偏移 4%
-            
+            title_top_offset = final_kwargs_sample.get(
+                "title_top_offset", -4
+            )  # 默认向上偏移 4%
+
             row_cfg = row_configs.get(row, {"pos_top": "50%", "height": "50%"})
             try:
                 # 解析 "15.5%" -> 15.5
-                base_top = float(row_cfg["pos_top"].strip('%'))
-                
+                base_top = float(row_cfg["pos_top"].strip("%"))
+
                 # 计算 Title Top (向上偏移)
                 calc_title_top = base_top + title_top_offset
                 final_title_top = f"{calc_title_top}%"
-                
+
                 # 计算 Legend Top (向下偏移，进入网格)
-                legend_top_offset = final_kwargs_sample.get("legend_top_offset", 0) 
+                legend_top_offset = final_kwargs_sample.get("legend_top_offset", 0)
                 calc_legend_top = base_top + legend_top_offset
                 final_legend_top = f"{calc_legend_top}%"
-                
+
             except ValueError:
                 final_title_top = "auto"
                 final_legend_top = "auto"
@@ -926,27 +1045,27 @@ class SubplotsGraph:
 
             if is_xy_reverse:
                 chart.reversal_axis()
-            
+
             for col_name, col_map in items:
                 series_name = col_map.get("name", col_name.replace("_", " "))
-                
+
                 raw_data = self._df[col_name].tolist()
                 # [Pure] 仅负责处理 NaN
                 y_data = [x if pd.notna(x) else None for x in raw_data]
-                
+
                 final_series_name = series_name
 
                 final_kwargs = self._kind_map.get("kwargs", {}).copy()
                 final_kwargs.update(col_map.get("graph_kwargs", {}))
-                
+
                 areastyle_opts = None
                 if final_kwargs.get("fill") == "tozeroy":
                     areastyle_opts = opts.AreaStyleOpts(opacity=0.3)
-                
+
                 mode = final_kwargs.get("mode", "lines")
                 is_symbol_show = "markers" in mode
                 markarea_opts = final_kwargs.get("markarea_opts", None)
-                
+
                 if isinstance(chart, Line):
                     chart.add_yaxis(
                         series_name=final_series_name,
@@ -962,31 +1081,36 @@ class SubplotsGraph:
                         series_name=final_series_name,
                         y_axis=y_data,
                         label_opts=opts.LabelOpts(is_show=False),
-                        bar_max_width=bar_max_width, 
+                        bar_max_width=bar_max_width,
                     )
 
             col_cfg = col_configs.get(col, {"pos_left": "5%", "width": "90%"})
 
-            is_last_row = (row == self.__rows)
+            is_last_row = row == self.__rows
             xaxis_show_label = True
             if shared_xaxes and not is_last_row:
                 xaxis_show_label = False
-            
-            final_legend_left = legend_pos_left_custom if legend_pos_left_custom is not None else "0%"  # <--- 默认在绘图区外左侧
+
+            final_legend_left = (
+                legend_pos_left_custom if legend_pos_left_custom is not None else "0%"
+            )  # <--- 默认在绘图区外左侧
             if legend_pos_right_custom is not None:
                 final_legend_left = None
-            
+
             if is_xy_reverse:
                 xaxis_config = opts.AxisOpts(
                     type_="value",
                     axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
-                    splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+                    splitline_opts=opts.SplitLineOpts(
+                        is_show=True,
+                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                    ),
                 )
                 yaxis_config = opts.AxisOpts(
                     type_="category",
                     boundary_gap=True,
                     is_inverse=True,
-                    axislabel_opts=opts.LabelOpts(is_show=True), 
+                    axislabel_opts=opts.LabelOpts(is_show=True),
                     axistick_opts=opts.AxisTickOpts(is_show=False),
                 )
             else:
@@ -995,44 +1119,52 @@ class SubplotsGraph:
                     boundary_gap=False if isinstance(chart, Line) else True,
                     axislabel_opts=opts.LabelOpts(is_show=xaxis_show_label),
                     axistick_opts=opts.AxisTickOpts(is_show=xaxis_show_label),
-                    splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+                    splitline_opts=opts.SplitLineOpts(
+                        is_show=True,
+                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                    ),
                 )
                 yaxis_config = opts.AxisOpts(
                     is_scale=True,
                     axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
-                    splitline_opts=opts.SplitLineOpts(is_show=True, linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"))
+                    splitline_opts=opts.SplitLineOpts(
+                        is_show=True,
+                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                    ),
                 )
 
             # 获取子图标题
             sub_title_text = first_item_map.get("title", "")
             if not sub_title_text:
-                 if row == 1 and col == 1:
-                     sub_title_text = self._layout.get("title", "")
+                if row == 1 and col == 1:
+                    sub_title_text = self._layout.get("title", "")
 
             chart.set_global_opts(
                 title_opts=opts.TitleOpts(
                     title=sub_title_text,
-                    pos_left=self._layout.get("title_pos_left", "center"),  # [Fix] 默认居中
-                    pos_top=final_title_top, # [Fix] 设置标题位置，防止堆叠
+                    pos_left=self._layout.get(
+                        "title_pos_left", "center"
+                    ),  # [Fix] 默认居中
+                    pos_top=final_title_top,  # [Fix] 设置标题位置，防止堆叠
                 ),
                 legend_opts=opts.LegendOpts(
-                    is_show=is_show_legend, 
-                    pos_top=final_legend_top, # [Fix] 设置图例位置
+                    is_show=is_show_legend,
+                    pos_top=final_legend_top,  # [Fix] 设置图例位置
                     pos_left=final_legend_left,
                     pos_right=legend_pos_right_custom,
                     orient="horizontal",
                     item_gap=5,
-                    textstyle_opts=opts.TextStyleOpts(font_size=10)
+                    textstyle_opts=opts.TextStyleOpts(font_size=10),
                 ),
                 tooltip_opts=opts.TooltipOpts(
                     trigger="axis",
                     axis_pointer_type="line",
                     background_color="rgba(255, 255, 255, 0.9)",
                     border_width=1,
-                    formatter=tooltip_formatter  # [New] 应用 formatter
+                    formatter=tooltip_formatter,  # [New] 应用 formatter
                 ),
                 xaxis_opts=xaxis_config,
-                yaxis_opts=yaxis_config
+                yaxis_opts=yaxis_config,
             )
 
             self._grid.add(
@@ -1043,11 +1175,10 @@ class SubplotsGraph:
                     width=col_cfg["width"],
                     pos_top=row_cfg["pos_top"],
                     height=row_cfg["height"],
-                    is_contain_label=True
-                )
+                    is_contain_label=True,
+                ),
             )
 
     @property
     def figure(self):
         return self._grid
-
