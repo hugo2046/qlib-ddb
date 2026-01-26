@@ -17,7 +17,8 @@ from ..graph import (
     ScatterGraph,
     get_percent_formatter,
     get_axis_percent_formatter,
-    get_number_formatter,  # [New]
+    get_number_formatter,
+    get_axis_number_formatter,
 )  # [New] 导入工具函数
 from ..display_config import RISK_ANALYSIS_SUBPLOTS_CONFIG, MONTHLY_RISK_SUBPLOTS_CONFIG
 
@@ -197,7 +198,7 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
 
         # [Modify] 核心修改点：使用 JS Formatter
         if feature == "information_ratio":
-            current_kwargs["axis_formatter"] = JsCode(get_number_formatter(2))
+            current_kwargs["axis_formatter"] = JsCode(get_axis_number_formatter(2))
             current_kwargs["tooltip_formatter"] = None  # IR 不需要百分比格式化
             # unit_suffix = ""
         else:

@@ -16,6 +16,7 @@ from .graph import (
     get_percent_formatter,
     get_axis_percent_formatter,
     get_number_formatter,
+    get_axis_number_formatter,
 )
 
 
@@ -158,6 +159,7 @@ REPORT_SUBPLOTS_CONFIG = SubplotsConfig(
             "legend_pos_right": "5%",
             "tooltip_formatter": JsCode(get_percent_formatter(2)),
             "axis_formatter": JsCode(get_axis_percent_formatter(2)),
+            "title_top_offset": -6,
         },
     ),
 )
@@ -228,8 +230,9 @@ GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
         kwargs=dict(
             is_show_legend=False,
             tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
-            axis_formatter=JsCode(get_number_formatter(2)),
-            title_top_offset=-8,  # 增加标题向上偏移量，避免与绘图区重叠
+            axis_formatter=JsCode(get_axis_number_formatter(2)),
+            title_top_offset=-6,  # 增加标题向上偏移量，避免与绘图区重叠
+            axis_pointer_type="shadow",
         ),
     ),  # kwargs will be updated with bin_size
 )

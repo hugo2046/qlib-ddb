@@ -733,6 +733,12 @@ class DistplotGraph(BaseGraph):
         if not self.chart:
             return
         super()._apply_global_opts()
+
+        # 获取用户自定义的 tooltip_formatter（如果有）
+        tooltip_formatter = self._normalize_formatter(
+            self._graph_kwargs.get("tooltip_formatter", None)
+        )
+
         # 强制更新一些适合 Distplot 的配置
         self.chart.set_global_opts(
             xaxis_opts=opts.AxisOpts(
@@ -746,8 +752,12 @@ class DistplotGraph(BaseGraph):
                     linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
                 ),
             ),
-            # Distplot 通常不需要具体数值的 Tooltip，或者需要特殊的
-            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow"),
+            # 如果用户提供了自定义 formatter，使用用户的；否则使用默认的 shadow 模式
+            tooltip_opts=opts.TooltipOpts(
+                trigger="axis",
+                axis_pointer_type="shadow",
+                formatter=tooltip_formatter,
+            ),
         )
 
 
@@ -1189,6 +1199,9 @@ class SubplotsGraph:
                 final_kwargs.get("tooltip_formatter", None)
             )
 
+            # 允许不同图表类型自定义 axis_pointer_type（如 DistplotGraph 使用 "shadow"）
+            axis_pointer_type = final_kwargs.get("axis_pointer_type", "line")
+
             # Calculate title horizontal position for multi-column layouts
             # Title position in Grid is relative to the entire canvas, not the grid cell
             # So we need to calculate the absolute center position of each grid cell
@@ -1207,12 +1220,21 @@ class SubplotsGraph:
 
             # 4. Prepare Global Opts Override
             # We explicitly override Title and Legend positions to suit the Grid
+
+            # Construct title configuration as a dict to support 'textAlign' property
+            # which is not directly exposed by opts.TitleOpts but supported by ECharts
+            title_config = {
+                "text": sub_title_text,
+                "left": title_pos_left,
+                "top": final_title_top,
+            }
+            # For specific absolute positioning (like centering in a sub-region),
+            # we need explicit text alignment.
+            if self.__cols > 1:
+                title_config["textAlign"] = "center"
+
             global_opts_updates = {
-                "title_opts": opts.TitleOpts(
-                    title=sub_title_text,
-                    pos_left=title_pos_left,
-                    pos_top=final_title_top,
-                ),
+                "title_opts": title_config,
                 "legend_opts": opts.LegendOpts(
                     is_show=is_show_legend,
                     pos_top=final_legend_top,
@@ -1224,7 +1246,7 @@ class SubplotsGraph:
                 ),
                 "tooltip_opts": opts.TooltipOpts(
                     trigger="axis",
-                    axis_pointer_type="line",
+                    axis_pointer_type=axis_pointer_type,
                     background_color="rgba(255, 255, 255, 0.9)",
                     border_width=1,
                     formatter=tooltip_formatter,
