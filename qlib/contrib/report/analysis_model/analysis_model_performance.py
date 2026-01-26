@@ -132,9 +132,16 @@ def _group_return(
     config = deepcopy(GROUP_RETURN_SUBPLOTS_CONFIG)
     config.kind_map["kwargs"]["bin_size"] = _bin_size
 
+    # 构建 sub_graph_data 以指定每个子图的标题
+    sub_graph_data = [
+        ("Long-Short", dict(row=1, col=1, name="Long-Short", title="Long-Short")),
+        ("Long-Average", dict(row=1, col=2, name="Long-Average", title="Long-Average")),
+    ]
+
     graph_hist = SubplotsGraph(
         df=dist_data,
         config=config,
+        sub_graph_data=sub_graph_data,
     )
 
     return graph_ts.figure, graph_hist.figure

@@ -741,6 +741,10 @@ class DistplotGraph(BaseGraph):
                 axislabel_opts=opts.LabelOpts(rotate=45),
                 name_location="middle",
                 name_gap=30,
+                splitline_opts=opts.SplitLineOpts(
+                    is_show=True,
+                    linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                ),
             ),
             # Distplot 通常不需要具体数值的 Tooltip，或者需要特殊的
             tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow"),
@@ -788,9 +792,76 @@ class HistogramGraph(BaseGraph):
 
 
 class SubplotsGraph:
-    """
-    类似于 df.plot(subplots=True) 的子图管理器
-    使用 Pyecharts Grid 实现
+    """子图管理器，使用 Pyecharts Grid 实现多子图布局
+
+    该类提供类似于 ``df.plot(subplots=True)`` 的功能，支持在一个画布上创建多个子图。
+    每个子图可以是不同类型的图表（如 ScatterGraph、BarGraph、DistplotGraph 等），
+    并且支持灵活的行列布局、共享坐标轴等高级功能。
+
+    .. note::
+        子图的图表类型通过 ``kind_map`` 或 ``config`` 参数指定，支持动态实例化不同的 Graph 类。
+        布局参数（如标题位置、图例位置）会自动计算以适配 Grid 布局。
+
+    Args:
+        df (pd.DataFrame, optional): 数据源 DataFrame，每列对应一个子图的数据系列。默认为 None。
+        kind_map (dict, optional): 图表类型映射配置，包含 ``kind`` (图表类型名称) 和 ``kwargs`` (图表参数)。
+            例如: ``{"kind": "ScatterGraph", "kwargs": {"mode": "lines"}}``。默认为 None。
+        layout (dict, optional): 全局布局配置，如 ``{"height": 1000, "width": "100%", "title": "总标题"}``。
+            默认为 None。
+        sub_graph_layout (dict, optional): 子图布局配置（保留参数，当前未使用）。默认为 None。
+        sub_graph_data (list, optional): 手动指定的子图数据配置列表。每个元素为 ``(列名, 配置字典)`` 元组，
+            配置字典包含 ``row``, ``col``, ``name``, ``title``, ``kind``, ``graph_kwargs`` 等字段。
+            如果未提供，将根据 ``df`` 自动生成。默认为 None。
+        subplots_kwargs (dict, optional): 子图布局参数，包含:
+
+            - ``rows`` (int): 行数
+            - ``cols`` (int): 列数
+            - ``shared_xaxes`` (bool): 是否共享 X 轴
+            - ``vertical_spacing`` (float): 垂直间距比例（0-1）
+            - ``horizontal_spacing`` (float): 水平间距比例（0-1）
+            - ``row_width`` (list): 各行高度权重列表
+            - ``col_width`` (list): 各列宽度权重列表
+
+            默认为 None。
+        config (Any, optional): 配置对象（如 ``SubplotsConfig``），包含 ``layout``, ``subplots_kwargs``,
+            ``kind_map`` 属性。如果提供，将作为默认配置，可被其他参数覆盖。默认为 None。
+        **kwargs: 其他关键字参数（保留用于扩展）。
+
+    Attributes:
+        _df (pd.DataFrame): 数据源 DataFrame
+        _layout (dict): 合并后的全局布局配置
+        _kind_map (dict): 合并后的图表类型映射配置
+        _subplots_kwargs (dict): 合并后的子图布局参数
+        _sub_graph_data (list): 子图数据配置列表
+        _grid (Grid): Pyecharts Grid 对象
+
+    Examples:
+        >>> import pandas as pd
+        >>> from qlib.contrib.report.graph import SubplotsGraph
+        >>> from qlib.contrib.report.display_config import REPORT_SUBPLOTS_CONFIG
+        >>>
+        >>> # 示例 1: 使用预定义配置
+        >>> df = pd.DataFrame({"A": [1, 2, 3], "B": [4, 5, 6]})
+        >>> sg = SubplotsGraph(df=df, config=REPORT_SUBPLOTS_CONFIG)
+        >>> sg.figure.render("output.html")
+        >>>
+        >>> # 示例 2: 手动指定子图配置
+        >>> sub_graph_data = [
+        ...     ("A", {"row": 1, "col": 1, "title": "Series A"}),
+        ...     ("B", {"row": 1, "col": 2, "title": "Series B"}),
+        ... ]
+        >>> sg = SubplotsGraph(
+        ...     df=df,
+        ...     sub_graph_data=sub_graph_data,
+        ...     subplots_kwargs={"rows": 1, "cols": 2},
+        ...     kind_map={"kind": "ScatterGraph", "kwargs": {"mode": "lines"}},
+        ... )
+
+    See Also:
+        :class:`BaseGraph`: 图表基类
+        :class:`ScatterGraph`: 折线图/散点图
+        :class:`BarGraph`: 柱状图
+        :class:`DistplotGraph`: 分布图（直方图 + KDE）
     """
 
     def __init__(
@@ -801,7 +872,7 @@ class SubplotsGraph:
         sub_graph_layout: dict = None,
         sub_graph_data: list = None,
         subplots_kwargs: dict = None,
-        config: Any = None,  # [Refactor] Add config parameter
+        config: Any = None,
         **kwargs,
     ):
         self._df = df
@@ -880,6 +951,26 @@ class SubplotsGraph:
             self._init_figure()
 
     def _init_sub_graph_data(self):
+        """自动生成子图数据配置列表
+
+        根据 DataFrame 的列自动生成子图配置。每列对应一个子图，
+        按照指定的列数（cols）自动计算行列位置。
+
+        生成的配置包含:
+            - column_name: DataFrame 列名
+            - row: 子图所在行号（从 1 开始）
+            - col: 子图所在列号（从 1 开始）
+            - name: 显示名称（将列名中的下划线替换为空格）
+            - kind: 图表类型（从 kind_map 获取）
+            - graph_kwargs: 图表参数（从 kind_map 获取）
+
+        .. note::
+            此方法仅在 ``sub_graph_data`` 参数未提供且 ``df`` 存在时调用。
+            子图按从左到右、从上到下的顺序排列。
+
+        Returns:
+            None: 结果存储在 ``self._sub_graph_data`` 中
+        """
         self._sub_graph_data = []
         for i, column_name in enumerate(self._df.columns):
             row = math.ceil((i + 1) / self.__cols)
@@ -899,6 +990,21 @@ class SubplotsGraph:
             self._sub_graph_data.append(_temp_row_data)
 
     def _init_subplots_kwargs(self):
+        """初始化默认子图布局参数
+
+        当 ``subplots_kwargs`` 参数未提供时，生成默认的布局配置。
+        默认配置为单列布局，行数等于 DataFrame 的列数。
+
+        默认参数:
+            - rows: DataFrame 列数（每列一行）
+            - cols: 1（单列）
+            - shared_xaxes: True（共享 X 轴）
+            - vertical_spacing: 0.05（垂直间距 5%）
+            - row_width: 所有行等高（权重均为 1）
+
+        Returns:
+            None: 结果存储在 ``self._subplots_kwargs`` 中
+        """
         _cols = 1
         _rows = len(self._df.columns) if self._df is not None else 1
         self._subplots_kwargs = dict()
@@ -909,6 +1015,33 @@ class SubplotsGraph:
         self._subplots_kwargs["row_width"] = [1] * _rows
 
     def _init_figure(self):
+        """初始化 Pyecharts Grid 布局并创建所有子图
+
+        该方法执行以下步骤:
+
+        1. **创建 Grid 画布**: 根据 layout 配置创建指定尺寸的 Grid 对象
+        2. **计算行列布局**:
+           - 根据 row_width 权重计算各行的高度和垂直位置
+           - 根据 col_width 权重计算各列的宽度和水平位置
+           - 考虑边距（margin_top/bottom/left/right）和间距（spacing）
+        3. **分组子图**: 将 sub_graph_data 按 (row, col) 分组
+        4. **创建每个子图**:
+           - 使用 BaseGraph 工厂方法实例化指定类型的图表
+           - 计算标题和图例的绝对位置（相对于整个画布）
+           - 应用全局选项覆盖（标题、图例、Tooltip、共享轴等）
+           - 将图表添加到 Grid 的指定位置
+
+        .. note::
+            - 顶部边距默认为 10% 以容纳标题
+            - 多列布局时，标题位置会自动计算以居中显示在各自的 Grid 单元格中
+            - 共享 X 轴时，非最后一行的 X 轴标签会被隐藏
+
+        Returns:
+            None: 结果存储在 ``self._grid`` 中
+
+        Raises:
+            ValueError: 当 Grid 配置参数无效时（如行列数不匹配）
+        """
         canvas_height = self._layout.get("height", 1000)
         canvas_width = self._layout.get("width", "100%")
         if isinstance(canvas_width, int):
@@ -930,7 +1063,7 @@ class SubplotsGraph:
         total_weight = sum(row_weights)
         vertical_spacing = self._subplots_kwargs.get("vertical_spacing", 0.02)
 
-        margin_top_pct = 5
+        margin_top_pct = 10  # 增加顶部边距以容纳标题
         margin_bottom_pct = 5
         spacing_pct = vertical_spacing * 100
         available_height_pct = (
@@ -982,7 +1115,7 @@ class SubplotsGraph:
             cell_groups[key].append((column_name, column_map))
 
         shared_xaxes = self._subplots_kwargs.get("shared_xaxes", False)
-        x_axis_data = self._df.index.astype(str).tolist()
+        # x_axis_data prep removed as each Graph instance handles its own X-axis
 
         for (row, col), items in cell_groups.items():
             first_item_map = items[0][1]
@@ -990,182 +1123,127 @@ class SubplotsGraph:
                 "kind", self._kind_map.get("kind", "ScatterGraph")
             )
 
-            chart = Bar() if "Bar" in kind else Line()
+            # 1. Prepare Data and Config for the specific cell
+            cols_in_cell = [item[0] for item in items]
+            cell_df = self._df[cols_in_cell].copy()
 
-            chart.add_xaxis(x_axis_data)
+            name_dict = {
+                col_name: col_map.get("name", col_name.replace("_", " "))
+                for col_name, col_map in items
+            }
 
-            # 获取参数
-            final_kwargs_sample = self._kind_map.get("kwargs", {}).copy()
-            final_kwargs_sample.update(first_item_map.get("graph_kwargs", {}))
+            # Base/Default kwargs
+            final_kwargs = self._kind_map.get("kwargs", {}).copy()
+            # Merge with cell-specific kwargs
+            final_kwargs.update(first_item_map.get("graph_kwargs", {}))
 
-            is_xy_reverse = "Bar" in kind and final_kwargs_sample.get(
-                "xy_reverse", False
+            # 2. Instantiate Graph via Factory
+            # This ensures we get the correct Graph type (e.g. DistplotGraph) with all its logic
+            graph_instance = BaseGraph.get_instance_with_graph_parameters(
+                graph_type=kind,
+                df=cell_df,
+                name_dict=name_dict,
+                graph_kwargs=final_kwargs,
+                # Pass layout mostly for title, though Grid handles positioning
+                layout={"title": first_item_map.get("title", "")},
             )
 
-            # [New] 标准化 formatter（支持字符串和 JsCode）
-            axis_formatter = BaseGraph._normalize_formatter(
-                final_kwargs_sample.get("axis_formatter", None)
-            )
-            tooltip_formatter = BaseGraph._normalize_formatter(
-                final_kwargs_sample.get("tooltip_formatter", None)
-            )
+            chart = graph_instance.figure
 
-            # 控制图例
-            is_show_legend = final_kwargs_sample.get("is_show_legend", True)
-            legend_pos_left_custom = final_kwargs_sample.get("legend_pos_left", None)
-            legend_pos_right_custom = final_kwargs_sample.get("legend_pos_right", None)
-            legend_pos_top_custom = final_kwargs_sample.get("legend_pos_top", None)
-
-            # [Fix 1: Title Position]
-            # 动态计算 Title 的位置，使其位于子图上方，而不是默认的 top="auto"
-            title_top_offset = final_kwargs_sample.get(
-                "title_top_offset", -4
-            )  # 默认向上偏移 4%
-
+            # 3. Calculate Layout Overrides (Positions)
+            title_top_offset = final_kwargs.get("title_top_offset", -4)
             row_cfg = row_configs.get(row, {"pos_top": "50%", "height": "50%"})
             try:
-                # 解析 "15.5%" -> 15.5
                 base_top = float(row_cfg["pos_top"].strip("%"))
-
-                # 计算 Title Top (向上偏移)
                 calc_title_top = base_top + title_top_offset
                 final_title_top = f"{calc_title_top}%"
 
-                # 计算 Legend Top (向下偏移，进入网格)
-                legend_top_offset = final_kwargs_sample.get("legend_top_offset", 0)
+                legend_top_offset = final_kwargs.get("legend_top_offset", 0)
                 calc_legend_top = base_top + legend_top_offset
                 final_legend_top = f"{calc_legend_top}%"
-
             except ValueError:
                 final_title_top = "auto"
                 final_legend_top = "auto"
 
-            # 柱宽
-            bar_max_width = final_kwargs_sample.get("bar_max_width", None)
-
-            if is_xy_reverse:
-                chart.reversal_axis()
-
-            for col_name, col_map in items:
-                series_name = col_map.get("name", col_name.replace("_", " "))
-
-                raw_data = self._df[col_name].tolist()
-                # [Pure] 仅负责处理 NaN
-                y_data = [x if pd.notna(x) else None for x in raw_data]
-
-                final_series_name = series_name
-
-                final_kwargs = self._kind_map.get("kwargs", {}).copy()
-                final_kwargs.update(col_map.get("graph_kwargs", {}))
-
-                areastyle_opts = None
-                if final_kwargs.get("fill") == "tozeroy":
-                    areastyle_opts = opts.AreaStyleOpts(opacity=0.3)
-
-                mode = final_kwargs.get("mode", "lines")
-                is_symbol_show = "markers" in mode
-                markarea_opts = final_kwargs.get("markarea_opts", None)
-
-                if isinstance(chart, Line):
-                    chart.add_yaxis(
-                        series_name=final_series_name,
-                        y_axis=y_data,
-                        is_symbol_show=is_symbol_show,
-                        areastyle_opts=areastyle_opts,
-                        markarea_opts=markarea_opts,
-                        label_opts=opts.LabelOpts(is_show=False),
-                        is_smooth=False,
-                    )
-                else:
-                    chart.add_yaxis(
-                        series_name=final_series_name,
-                        y_axis=y_data,
-                        label_opts=opts.LabelOpts(is_show=False),
-                        bar_max_width=bar_max_width,
-                    )
-
             col_cfg = col_configs.get(col, {"pos_left": "5%", "width": "90%"})
 
-            is_last_row = row == self.__rows
-            xaxis_show_label = True
-            if shared_xaxes and not is_last_row:
-                xaxis_show_label = False
+            # Legend Config
+            is_show_legend = final_kwargs.get("is_show_legend", True)
+            legend_pos_left_custom = final_kwargs.get("legend_pos_left", None)
+            legend_pos_right_custom = final_kwargs.get("legend_pos_right", None)
 
             final_legend_left = (
                 legend_pos_left_custom if legend_pos_left_custom is not None else "0%"
-            )  # <--- 默认在绘图区外左侧
+            )
             if legend_pos_right_custom is not None:
                 final_legend_left = None
 
-            if is_xy_reverse:
-                xaxis_config = opts.AxisOpts(
-                    type_="value",
-                    axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
-                    splitline_opts=opts.SplitLineOpts(
-                        is_show=True,
-                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
-                    ),
-                )
-                yaxis_config = opts.AxisOpts(
-                    type_="category",
-                    boundary_gap=True,
-                    is_inverse=True,
-                    axislabel_opts=opts.LabelOpts(is_show=True),
-                    axistick_opts=opts.AxisTickOpts(is_show=False),
-                )
-            else:
-                xaxis_config = opts.AxisOpts(
-                    type_="category",
-                    boundary_gap=False if isinstance(chart, Line) else True,
-                    axislabel_opts=opts.LabelOpts(is_show=xaxis_show_label),
-                    axistick_opts=opts.AxisTickOpts(is_show=xaxis_show_label),
-                    splitline_opts=opts.SplitLineOpts(
-                        is_show=True,
-                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
-                    ),
-                )
-                yaxis_config = opts.AxisOpts(
-                    is_scale=True,
-                    axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
-                    splitline_opts=opts.SplitLineOpts(
-                        is_show=True,
-                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
-                    ),
-                )
-
-            # 获取子图标题
+            # Subtitle fallback
             sub_title_text = first_item_map.get("title", "")
             if not sub_title_text:
                 if row == 1 and col == 1:
                     sub_title_text = self._layout.get("title", "")
 
-            chart.set_global_opts(
-                title_opts=opts.TitleOpts(
+            # Identify tooltip formatter from kwargs to re-apply specific style
+            tooltip_formatter = BaseGraph._normalize_formatter(
+                final_kwargs.get("tooltip_formatter", None)
+            )
+
+            # Calculate title horizontal position for multi-column layouts
+            # Title position in Grid is relative to the entire canvas, not the grid cell
+            # So we need to calculate the absolute center position of each grid cell
+            if self.__cols > 1:
+                # Calculate center position of the current grid cell
+                try:
+                    cell_left = float(col_cfg["pos_left"].strip("%"))
+                    cell_width = float(col_cfg["width"].strip("%"))
+                    # Title should be at the center of the grid cell
+                    title_pos_left = f"{cell_left + cell_width / 2}%"
+                except (ValueError, KeyError):
+                    title_pos_left = "center"
+            else:
+                # Single column: use global layout setting
+                title_pos_left = self._layout.get("title_pos_left", "center")
+
+            # 4. Prepare Global Opts Override
+            # We explicitly override Title and Legend positions to suit the Grid
+            global_opts_updates = {
+                "title_opts": opts.TitleOpts(
                     title=sub_title_text,
-                    pos_left=self._layout.get(
-                        "title_pos_left", "center"
-                    ),  # [Fix] 默认居中
-                    pos_top=final_title_top,  # [Fix] 设置标题位置，防止堆叠
+                    pos_left=title_pos_left,
+                    pos_top=final_title_top,
                 ),
-                legend_opts=opts.LegendOpts(
+                "legend_opts": opts.LegendOpts(
                     is_show=is_show_legend,
-                    pos_top=final_legend_top,  # [Fix] 设置图例位置
+                    pos_top=final_legend_top,
                     pos_left=final_legend_left,
                     pos_right=legend_pos_right_custom,
                     orient="horizontal",
                     item_gap=5,
                     textstyle_opts=opts.TextStyleOpts(font_size=10),
                 ),
-                tooltip_opts=opts.TooltipOpts(
+                "tooltip_opts": opts.TooltipOpts(
                     trigger="axis",
                     axis_pointer_type="line",
                     background_color="rgba(255, 255, 255, 0.9)",
                     border_width=1,
-                    formatter=tooltip_formatter,  # [New] 应用 formatter
+                    formatter=tooltip_formatter,
                 ),
-                xaxis_opts=xaxis_config,
-                yaxis_opts=yaxis_config,
-            )
+            }
+
+            # Handle Shared X-Axis (only if enabled and not last row)
+            # CAUTION: This replaces xaxis_opts, so use with care on complex graphs
+            is_last_row = row == self.__rows
+            if shared_xaxes and not is_last_row:
+                global_opts_updates["xaxis_opts"] = opts.AxisOpts(
+                    axislabel_opts=opts.LabelOpts(is_show=False),
+                    splitline_opts=opts.SplitLineOpts(
+                        is_show=True,
+                        linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+                    ),
+                )
+
+            chart.set_global_opts(**global_opts_updates)
 
             self._grid.add(
                 chart,
@@ -1181,4 +1259,15 @@ class SubplotsGraph:
 
     @property
     def figure(self):
+        """获取生成的 Pyecharts Grid 对象
+
+        Returns:
+            Grid: Pyecharts Grid 对象，包含所有子图。可调用 ``render()`` 或 ``render_notebook()`` 方法进行渲染。
+
+        Examples:
+            >>> sg = SubplotsGraph(df=df, config=config)
+            >>> grid = sg.figure
+            >>> grid.render("output.html")  # 渲染为 HTML 文件
+            >>> grid.render_notebook()  # 在 Jupyter Notebook 中显示
+        """
         return self._grid

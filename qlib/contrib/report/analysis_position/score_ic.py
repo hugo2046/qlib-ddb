@@ -3,9 +3,10 @@
 
 import pandas as pd
 
-from ..graph import ScatterGraph,get_number_formatter
+from ..graph import ScatterGraph, get_number_formatter
 from ..utils import guess_plotly_rangebreaks
-from pyecharts.commons.utils import JsCode 
+from pyecharts.commons.utils import JsCode
+
 
 def _get_score_ic(pred_label: pd.DataFrame):
     """
@@ -61,8 +62,11 @@ def score_ic_graph(
     """
     _ic_df = _get_score_ic(pred_label)
 
+    from ..display_config import SCORE_IC_CONFIG
+
     _figure = ScatterGraph(
         _ic_df,
+        config=SCORE_IC_CONFIG,
         layout=dict(
             title="Score IC",
             xaxis=dict(
@@ -74,10 +78,6 @@ def score_ic_graph(
         ),
         graph_kwargs={
             "mode": "lines+markers",
-            "legend_pos_left": "75%",  # 图例在绘图区外左侧
-            "legend_pos_top": "4%",  # 图例在顶部，避开标题区域
-            "tooltip_formatter": JsCode(get_number_formatter(2)),
-            "series_colors": {"Rank IC": "#f0811e"},  # Rank IC 设置为橙色
         },
     ).figure
     if show_notebook:

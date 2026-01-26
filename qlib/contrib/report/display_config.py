@@ -214,6 +214,9 @@ MONTHLY_RISK_SUBPLOTS_CONFIG = SubplotsConfig(
 
 # Model Performance Group Return Config
 GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
+    layout=dict(
+        height=400,
+    ),
     subplots_kwargs=dict(
         rows=1,
         cols=2,
@@ -221,6 +224,12 @@ GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
         subplot_titles=["Long-Short", "Long-Average"],
     ),
     kind_map=dict(
-        kind="DistplotGraph", kwargs=dict()
+        kind="DistplotGraph",
+        kwargs=dict(
+            is_show_legend=False,
+            tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
+            axis_formatter=JsCode(get_number_formatter(2)),
+            title_top_offset=-8,  # 增加标题向上偏移量，避免与绘图区重叠
+        ),
     ),  # kwargs will be updated with bin_size
 )

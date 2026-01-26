@@ -197,7 +197,7 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
 
         # [Modify] 核心修改点：使用 JS Formatter
         if feature == "information_ratio":
-            current_kwargs["axis_formatter"] = None
+            current_kwargs["axis_formatter"] = JsCode(get_number_formatter(2))
             current_kwargs["tooltip_formatter"] = None  # IR 不需要百分比格式化
             # unit_suffix = ""
         else:
