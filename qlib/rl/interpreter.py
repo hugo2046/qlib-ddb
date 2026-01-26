@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-import gym
+# import gym
+import gymnasium as gym
 import numpy as np
-from gym import spaces
+
+# from gym import spaces
+from gymnasium import spaces
 
 from qlib.typehint import final
 from .simulator import ActType, StateType
@@ -106,25 +109,33 @@ def _gym_space_contains(space: gym.Space, x: Any) -> None:
     """
     if isinstance(space, spaces.Dict):
         if not isinstance(x, dict) or len(x) != len(space):
-            raise GymSpaceValidationError("Sample must be a dict with same length as space.", space, x)
+            raise GymSpaceValidationError(
+                "Sample must be a dict with same length as space.", space, x
+            )
         for k, subspace in space.spaces.items():
             if k not in x:
                 raise GymSpaceValidationError(f"Key {k} not found in sample.", space, x)
             try:
                 _gym_space_contains(subspace, x[k])
             except GymSpaceValidationError as e:
-                raise GymSpaceValidationError(f"Subspace of key {k} validation error.", space, x) from e
+                raise GymSpaceValidationError(
+                    f"Subspace of key {k} validation error.", space, x
+                ) from e
 
     elif isinstance(space, spaces.Tuple):
         if isinstance(x, (list, np.ndarray)):
             x = tuple(x)  # Promote list and ndarray to tuple for contains check
         if not isinstance(x, tuple) or len(x) != len(space):
-            raise GymSpaceValidationError("Sample must be a tuple with same length as space.", space, x)
+            raise GymSpaceValidationError(
+                "Sample must be a tuple with same length as space.", space, x
+            )
         for i, (subspace, part) in enumerate(zip(space, x)):
             try:
                 _gym_space_contains(subspace, part)
             except GymSpaceValidationError as e:
-                raise GymSpaceValidationError(f"Subspace of index {i} validation error.", space, x) from e
+                raise GymSpaceValidationError(
+                    f"Subspace of index {i} validation error.", space, x
+                ) from e
 
     else:
         if not space.contains(x):
