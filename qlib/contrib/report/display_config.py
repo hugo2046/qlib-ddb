@@ -236,3 +236,25 @@ GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
         ),
     ),  # kwargs will be updated with bin_size
 )
+
+
+# Analysis Model Performance Layouts
+IC_HEATMAP_LAYOUT = {
+    "title": "Monthly IC",
+    "xaxis": {"name": "Month"},
+    "yaxis": {"name": "Year"},
+}
+
+IC_DIST_LAYOUT = {
+    "title": "IC Distribution",
+    "width": "100%",
+    "height": 400,
+}
+
+IC_QQ_LAYOUT = {
+    "title": "IC Normal Dist. Q-Q",
+    "width": "100%",
+    "height": 500,
+    "xaxis": {"title": "Normal Distribution Quantile"},
+    "yaxis": {"title": "Observed Quantile"},
+}

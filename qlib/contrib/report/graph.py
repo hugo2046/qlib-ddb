@@ -16,7 +16,7 @@ import pandas as pd
 from pyecharts import options as opts
 
 # 引入 Pyecharts 组件
-from pyecharts.charts import Bar, Grid, HeatMap, Line
+from pyecharts.charts import Bar, Grid, HeatMap, Line, Scatter
 from pyecharts.commons.utils import JsCode  # [New] 支持 JS Formatter
 from pyecharts.globals import ThemeType
 from scipy.stats import gaussian_kde
@@ -689,7 +689,12 @@ class DistplotGraph(BaseGraph):
 
         # 确定 bins
         if bin_size:
-            bins = np.arange(np.floor(_min_val), np.ceil(_max_val) + bin_size, bin_size)
+            # 使用 bin_size 对齐边界，而不是简单的 floor/ceil 取整
+            # 避免数据范围很小但数值较大时产生大量空 bin
+            start_val = np.floor(_min_val / bin_size) * bin_size
+            end_val = np.ceil(_max_val / bin_size) * bin_size
+            # 增加一个小量确保包含边界
+            bins = np.arange(start_val, end_val + bin_size / 1000, bin_size)
         else:
             bins = 50  # 默认分50份
 
@@ -803,19 +808,76 @@ class HistogramGraph(BaseGraph):
     _name = "histogram"
 
     def _init_chart(self):
+        # 初始化 Bar
         self.chart = Bar()
-        x_data = self._df.index.astype(str).tolist()
-        self.chart.add_xaxis(x_data)
+
+        # 获取配置参数
+        bin_size = self._graph_kwargs.get("bin_size", None)
+
+        # 1. 计算所有数据的范围，确保 X 轴对齐 (统一 Bins)
+        _min_val, _max_val = float("inf"), float("-inf")
+        valid_dfs = {}
+
         for col, name in self._name_dict.items():
-            y_data = [
-                x * 100 if not pd.isna(x) else None for x in self._df[col].tolist()
-            ]
+            # 兼容性处理：如果数据已经是聚合好的（虽然HistogramGraph语义上应该是Raw Data），这里假设传入的是Raw Data
+            # 如果用户仍传入聚合数据，可能会出错，但在 Pyecharts 版重构语义下，HistogramGraph 应统一为"直方图"
+            data = self._df[col].dropna().values
+            if len(data) == 0:
+                continue
+            _min_val = min(_min_val, data.min())
+            _max_val = max(_max_val, data.max())
+            valid_dfs[name] = data
+
+        if not valid_dfs:
+            return
+
+        # 确定 bins
+        if bin_size:
+            # 使用 bin_size 对齐边界，而不是简单的 floor/ceil 取整
+            start_val = np.floor(_min_val / bin_size) * bin_size
+            end_val = np.ceil(_max_val / bin_size) * bin_size
+            bins = np.arange(start_val, end_val + bin_size / 1000, bin_size)
+        else:
+            bins = 50  # 默认分50份
+
+        # 2. 生成 X 轴坐标 (使用 numpy histogram 的 bin edges)
+        combined_data = np.concatenate(list(valid_dfs.values()))
+        hist_total, bin_edges = np.histogram(combined_data, bins=bins)
+
+        # X 轴显示为 bin 的中心点
+        x_axis_str = [
+            f"{(bin_edges[i] + bin_edges[i+1])/2:.4f}"
+            for i in range(len(bin_edges) - 1)
+        ]
+        self.chart.add_xaxis(x_axis_str)
+
+        # 3. 循环添加系列
+        for name, data in valid_dfs.items():
+            # 计算直方图频数 (density=False, 返回计数)
+            hist, _ = np.histogram(data, bins=bin_edges, density=False)
+
             self.chart.add_yaxis(
-                series_name=f"{name} (%)",
-                y_axis=y_data,
+                series_name=name,
+                y_axis=hist.tolist(),
                 category_gap=0,
                 label_opts=opts.LabelOpts(is_show=False),
+                # 默认不使用 stack，即并排显示，如果需要 stack 可在 graph_kwargs 中指定
+                stack=self._graph_kwargs.get("stack", None),
             )
+
+    def _apply_global_opts(self):
+        super()._apply_global_opts()
+        # Histogram 特有配置
+        self.chart.set_global_opts(
+            xaxis_opts=opts.AxisOpts(
+                type_="category",
+                is_scale=True,
+                name_location="middle",
+                name_gap=30,
+                axislabel_opts=opts.LabelOpts(rotate=45),
+            ),
+            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="shadow"),
+        )
 
 
 class SubplotsGraph:
@@ -1328,3 +1390,67 @@ class SubplotsGraph:
             >>> grid.render_notebook()  # 在 Jupyter Notebook 中显示
         """
         return self._grid
+
+
+class QQPlotGraph(BaseGraph):
+    """Q-Q Plot Graph (Pyecharts Implementation)"""
+
+    _name = "qqplot"
+
+    def _init_chart(self):
+        self.chart = Scatter()
+        # Use index as Theoretical Quantiles (X), first column as Sample Quantiles (Y)
+        x_data = self._df.index.tolist()
+        y_data = self._df.iloc[:, 0].tolist()
+
+        self.chart.add_xaxis(xaxis_data=x_data)
+        self.chart.add_yaxis(
+            series_name="Sample",
+            y_axis=y_data,
+            label_opts=opts.LabelOpts(is_show=False),
+            itemstyle_opts=opts.ItemStyleOpts(color="#1f77b4"),
+        )
+
+        min_x, max_x = min(x_data), max(x_data)
+        line = (
+            Line()
+            .add_xaxis([min_x, max_x])
+            .add_yaxis(
+                series_name="Ref",
+                y_axis=[min_x, max_x],
+                label_opts=opts.LabelOpts(is_show=False),
+                linestyle_opts=opts.LineStyleOpts(color="red", type_="dashed"),
+                is_symbol_show=False,
+            )
+        )
+        self.chart.overlap(line)
+
+    def _apply_global_opts(self):
+        super()._apply_global_opts()
+
+        # Extract configuration from layout
+        title_text = self._layout.get("title", "")
+        xaxis_title = self._layout.get("xaxis", {}).get(
+            "title", "Theoretical Quantiles"
+        )
+        yaxis_title = self._layout.get("yaxis", {}).get("title", "Sample Quantiles")
+
+        self.chart.set_global_opts(
+            title_opts=opts.TitleOpts(title=title_text),
+            xaxis_opts=opts.AxisOpts(
+                type_="value",
+                name=xaxis_title,
+                name_location="middle",
+                name_gap=30,
+                is_scale=True,
+                splitline_opts=opts.SplitLineOpts(is_show=False),
+            ),
+            yaxis_opts=opts.AxisOpts(
+                type_="value",
+                name=yaxis_title,
+                name_location="middle",
+                name_gap=40,
+                is_scale=True,
+                splitline_opts=opts.SplitLineOpts(is_show=False),
+            ),
+        )
