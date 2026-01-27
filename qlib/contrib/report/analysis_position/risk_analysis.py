@@ -147,9 +147,54 @@ def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
     # ).figure
 
     # use echarts
+    analysis_df = _get_all_risk_analysis(analysis_df)
+
+    # Colors: Blue, Orange, Green, Red
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+
+    # Prepare sub_graph_data with custom colors and single legend
+    sub_graph_data = []
+    base_kwargs = RISK_ANALYSIS_SUBPLOTS_CONFIG.kind_map["kwargs"].copy()
+
+    for i, col_name in enumerate(analysis_df.columns):
+        kwargs = base_kwargs.copy()
+        kwargs["color"] = colors[i % len(colors)]
+
+        # Only show legend in the first plot (contains all series in Grid), setting it to vertical right
+        if i == 0:
+            kwargs["is_show_legend"] = True
+            kwargs["legend_orient"] = "vertical"
+            kwargs["legend_pos_right"] = "5%"
+            kwargs["legend_pos_top"] = "10%"
+            # [Fix] Manually provide all legend items so ECharts displays them
+            # even if the current chart only contains one of sample series.
+            # Transform column names to display names (replace _ with space)
+            kwargs["legend_data"] = [
+                col.replace("_", " ") for col in analysis_df.columns
+            ]
+            # Note: SubplotsGraph._apply_global_opts handles clearing legend_pos_left if right is set
+        else:
+            kwargs["is_show_legend"] = False
+
+        sub_graph_data.append(
+            (
+                col_name,
+                dict(
+                    row=i + 1,
+                    col=1,
+                    kind="BarGraph",
+                    graph_kwargs=kwargs,
+                ),
+            )
+        )
+
     _figure = SubplotsGraph(
-        _get_all_risk_analysis(analysis_df),
+        analysis_df,
+        sub_graph_data=sub_graph_data,
         config=RISK_ANALYSIS_SUBPLOTS_CONFIG,
+        subplots_kwargs={
+            "margin_right": 0.20
+        },  # [Fix] Increase right margin for legend
     ).figure
     return (_figure,)
 

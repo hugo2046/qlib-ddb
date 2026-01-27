@@ -511,6 +511,9 @@ class BaseGraph:
         if legend_pos_right is not None:
             legend_pos_left = None
 
+        # [New] 获取 legend_data
+        legend_data = self._graph_kwargs.get("legend_data", None)
+
         # [New] 标准化 formatter（支持字符串和 JsCode）
         axis_formatter = self._normalize_formatter(
             self._graph_kwargs.get("axis_formatter", None)
@@ -529,6 +532,18 @@ class BaseGraph:
         )
 
         # 2. 应用配置 (支持 title_pos_left 和 orient)
+
+        # [Fix] LegendOpts doesn't support 'data' in __init__. We inject it manually.
+        _legend_opts = opts.LegendOpts(
+            is_show=is_show_legend,
+            pos_top=legend_pos_top,
+            pos_left=legend_pos_left,
+            pos_right=legend_pos_right,
+            orient=legend_orient,  # <--- 支持图例方向配置
+        )
+        if legend_data:
+            _legend_opts.opts["data"] = legend_data
+
         self.chart.set_global_opts(
             title_opts=opts.TitleOpts(
                 title=self._layout.get("title", ""),
@@ -539,13 +554,7 @@ class BaseGraph:
                 axis_pointer_type="line",
                 formatter=tooltip_formatter,  # [New] 应用 formatter
             ),
-            legend_opts=opts.LegendOpts(
-                is_show=is_show_legend,
-                pos_top=legend_pos_top,
-                pos_left=legend_pos_left,
-                pos_right=legend_pos_right,
-                orient=legend_orient,  # <--- 支持图例方向配置
-            ),
+            legend_opts=_legend_opts,
             xaxis_opts=opts.AxisOpts(
                 type_="category",
                 is_scale=True,
@@ -634,10 +643,18 @@ class BarGraph(BaseGraph):
 
             final_name = name
 
+            # [Feature] Support custom color for BarGraph
+            itemstyle_opts = None
+            if self._graph_kwargs.get("color"):
+                itemstyle_opts = opts.ItemStyleOpts(
+                    color=self._graph_kwargs.get("color")
+                )
+
             self.chart.add_yaxis(
                 series_name=final_name,
                 y_axis=y_data,
                 label_opts=opts.LabelOpts(is_show=False),
+                itemstyle_opts=itemstyle_opts,
             )
 
 
@@ -1095,8 +1112,8 @@ class SubplotsGraph:
 
         total_col_weight = sum(col_width_list)
         horizontal_spacing = self._subplots_kwargs.get("horizontal_spacing", 0.02)
-        margin_left_pct = 5
-        margin_right_pct = 5
+        margin_left_pct = self._subplots_kwargs.get("margin_left", 0.05) * 100
+        margin_right_pct = self._subplots_kwargs.get("margin_right", 0.05) * 100
         h_spacing_pct = horizontal_spacing * 100
         available_width_pct = (
             100 - margin_left_pct - margin_right_pct - (self.__cols - 1) * h_spacing_pct
@@ -1170,10 +1187,21 @@ class SubplotsGraph:
 
                 legend_top_offset = final_kwargs.get("legend_top_offset", 0)
                 calc_legend_top = base_top + legend_top_offset
-                final_legend_top = f"{calc_legend_top}%"
+
+                # Check for explicit legend_pos_top override
+                explicit_legend_top = final_kwargs.get("legend_pos_top", None)
+                if explicit_legend_top is not None:
+                    final_legend_top = explicit_legend_top
+                else:
+                    final_legend_top = f"{calc_legend_top}%"
             except ValueError:
                 final_title_top = "auto"
-                final_legend_top = "auto"
+                # Still respect explicit override even if base_top failed
+                explicit_legend_top = final_kwargs.get("legend_pos_top", None)
+                if explicit_legend_top is not None:
+                    final_legend_top = explicit_legend_top
+                else:
+                    final_legend_top = "auto"
 
             col_cfg = col_configs.get(col, {"pos_left": "5%", "width": "90%"})
 
@@ -1201,6 +1229,8 @@ class SubplotsGraph:
 
             # 允许不同图表类型自定义 axis_pointer_type（如 DistplotGraph 使用 "shadow"）
             axis_pointer_type = final_kwargs.get("axis_pointer_type", "line")
+            legend_orient = final_kwargs.get("legend_orient", "horizontal")
+            legend_data = final_kwargs.get("legend_data", None)
 
             # Calculate title horizontal position for multi-column layouts
             # Title position in Grid is relative to the entire canvas, not the grid cell
@@ -1233,17 +1263,22 @@ class SubplotsGraph:
             if self.__cols > 1:
                 title_config["textAlign"] = "center"
 
+            # [Fix] LegendOpts doesn't support 'data' in __init__. We inject it manually.
+            _legend_opts = opts.LegendOpts(
+                is_show=is_show_legend,
+                pos_top=final_legend_top,
+                pos_left=final_legend_left,
+                pos_right=legend_pos_right_custom,
+                orient=legend_orient,
+                item_gap=5,
+                textstyle_opts=opts.TextStyleOpts(font_size=10),
+            )
+            if legend_data:
+                _legend_opts.opts["data"] = legend_data
+
             global_opts_updates = {
                 "title_opts": title_config,
-                "legend_opts": opts.LegendOpts(
-                    is_show=is_show_legend,
-                    pos_top=final_legend_top,
-                    pos_left=final_legend_left,
-                    pos_right=legend_pos_right_custom,
-                    orient="horizontal",
-                    item_gap=5,
-                    textstyle_opts=opts.TextStyleOpts(font_size=10),
-                ),
+                "legend_opts": _legend_opts,
                 "tooltip_opts": opts.TooltipOpts(
                     trigger="axis",
                     axis_pointer_type=axis_pointer_type,

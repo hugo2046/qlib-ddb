@@ -166,7 +166,7 @@ REPORT_SUBPLOTS_CONFIG = SubplotsConfig(
 
 # Risk Analysis Bar Chart Config
 RISK_ANALYSIS_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout={"height": 1000},
+    layout={"height": 460},
     subplots_kwargs={
         "rows": 4,
         "cols": 1,
@@ -179,8 +179,8 @@ RISK_ANALYSIS_SUBPLOTS_CONFIG = SubplotsConfig(
             "xy_reverse": False,
             "is_show_label": False,
             "is_show_legend": False,
-            "axis_formatter": JsCode(get_axis_percent_formatter(2)),
-            "tooltip_formatter": JsCode(get_percent_formatter(4)),
+            "axis_formatter": JsCode(get_axis_number_formatter(3)),
+            "tooltip_formatter": JsCode(get_number_formatter(4)),
         },
     ),
 )
