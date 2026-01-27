@@ -305,7 +305,7 @@ class TopkDropoutStrategy(BaseSignalStrategy):
             buy_order_list.append(buy_order)
         return TradeDecisionWO(sell_order_list + buy_order_list, self)
     
-    
+# [自定义策略] 二值信号策略
 class BinarySignalStrategy(BaseSignalStrategy):
     """二值信号策略 (0/1)
     
@@ -577,6 +577,7 @@ class BinarySignalStrategy(BaseSignalStrategy):
         
         return TradeDecisionWO(sell_orders + buy_orders, self)
     
+# [自定义策略] 二值信号策略
 class TopkRebalanceStrategy(BaseSignalStrategy):
     """Top-K Rebalance Strategy
 
