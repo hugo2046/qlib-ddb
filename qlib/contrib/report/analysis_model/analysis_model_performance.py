@@ -84,13 +84,19 @@ def _plot_qq(score: pd.Series, show_notebook: bool = True) -> object:
     return graph.figure
 
 
-def _group_return(
-    pred_label: pd.DataFrame, N: int = 5, reverse: bool = False, **kwargs
+def compute_group_return(
+    pred_label: pd.DataFrame, N: int = 5, reverse: bool = False
 ) -> tuple:
     """
-    绘制分组累计收益图 + 分布图
+    计算分组收益
 
-    返回: (group_scatter_figure, group_hist_figure)
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        N: 分组数，默认为 5
+        reverse: 是否反转分数
+
+    Returns:
+        (group_cum_ret, dist_data): 累计收益 DataFrame 和分布数据 DataFrame
     """
     df = pred_label.copy()
     if reverse:
@@ -109,50 +115,63 @@ def _group_return(
     group_ret = df.groupby(["datetime", "group"])["label"].mean().unstack()
     group_ret.columns = [f"Group{i+1}" for i in range(len(group_ret.columns))]
 
-    # 3. 计算多空收益 (Long-Short) - 基于日收益率计算
-    # 分组默认升序排列top组-bottom组
+    # 3. 计算多空收益 (Long-Short)
     if not group_ret.empty:
         group_ret["Long-Short"] = group_ret.iloc[:, -1] - group_ret.iloc[:, 0]
 
-    # 4. 计算多均收益 (Long-Average) - 基于日收益率计算
+    # 4. 计算多均收益 (Long-Average)
     daily_avg = df.groupby("datetime")["label"].mean()
     if not group_ret.empty:
-        # Long-Average = Top Group - Daily Average
         group_ret["Long-Average"] = group_ret.iloc[:, -1] - daily_avg
 
-    # 5. 计算累计收益 (用于绘制时序图)
+    # 5. 累计收益 + 分布数据
     group_cum_ret = group_ret.cumsum()
+    dist_data = group_ret[["Long-Short", "Long-Average"]].copy()
 
-    # 绘制时序图使用 group_cum_ret
-    from ..display_config import GROUP_RETURN_CONFIG
+    return group_cum_ret, dist_data
 
-    graph_ts = ScatterGraph(
-        df=group_cum_ret,
-        config=GROUP_RETURN_CONFIG,
+
+def _group_return(
+    pred_label: pd.DataFrame, N: int = 5, reverse: bool = False, config=None, **kwargs
+) -> tuple:
+    """
+    绘制分组累计收益图 + 分布图
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        N: 分组数，默认为 5
+        reverse: 是否反转分数
+        config: 可选的配置
+
+    Returns:
+        (group_scatter_figure, group_hist_figure)
+    """
+    from copy import deepcopy
+    from ..display_config import GROUP_RETURN_CONFIG, GROUP_RETURN_SUBPLOTS_CONFIG
+    from ..graph import plot_timeseries
+
+    # 1. 计算
+    group_cum_ret, dist_data = compute_group_return(pred_label, N, reverse)
+
+    # 2. 时序图
+    config = config or GROUP_RETURN_CONFIG
+    graph_ts_fig = plot_timeseries(
+        group_cum_ret,
+        config=config,
+        title="Cumulative Return",
         layout={
-            "title": "Cumulative Return",
             "width": "100%",
             "height": 500,
             "xaxis": {"title": "Date"},
             "yaxis": {"title": "Cumulative Return (Simple Interest)"},
         },
-        graph_kwargs={
-            "mode": "lines",
-        },
     )
 
-    # 6. 准备分布图数据 (long-short 和 long-average) - 使用日收益率
-    dist_data = group_ret[["Long-Short", "Long-Average"]].copy()
+    # 3. 分布图
     _bin_size = float(((dist_data.max() - dist_data.min()) / 20).min())
+    subplot_config = deepcopy(GROUP_RETURN_SUBPLOTS_CONFIG)
+    subplot_config.kind_map["kwargs"]["bin_size"] = _bin_size
 
-    # 7. 绘制分布图 (使用 SubplotsGraph)
-    # Update kwargs for DistplotGraph dynamically
-    from copy import deepcopy
-
-    config = deepcopy(GROUP_RETURN_SUBPLOTS_CONFIG)
-    config.kind_map["kwargs"]["bin_size"] = _bin_size
-
-    # 构建 sub_graph_data 以指定每个子图的标题
     sub_graph_data = [
         ("Long-Short", dict(row=1, col=1, name="Long-Short", title="Long-Short")),
         ("Long-Average", dict(row=1, col=2, name="Long-Average", title="Long-Average")),
@@ -160,28 +179,35 @@ def _group_return(
 
     graph_hist = SubplotsGraph(
         df=dist_data,
-        config=config,
+        config=subplot_config,
         sub_graph_data=sub_graph_data,
     )
 
-    return graph_ts.figure, graph_hist.figure
+    return graph_ts_fig, graph_hist.figure
 
 
-def _pred_ic(
+def compute_ic(
     pred_label: pd.DataFrame,
     methods: Sequence[str] = ("IC", "Rank IC"),
-    **kwargs,
-) -> List[object]:
+    show_nature_day: bool = False,
+) -> pd.DataFrame:
     """
-    绘制 IC 分析图 (IC/Rank IC 时序, Monthly IC 热力图, IC 分布 + Q-Q 图)
+    计算 IC 和 Rank IC 时序
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        methods: 计算方法列表，默认 ("IC", "Rank IC")
+        show_nature_day: 是否按自然日填充
+
+    Returns:
+        DataFrame，index 为日期，columns 为各 IC 方法
     """
     _methods_mapping = {"IC": "pearson", "Rank IC": "spearman"}
 
     def _corr_series(x, method):
         return x["label"].corr(x["score"], method=method)
 
-    # 1. 计算 IC 和 Rank IC
-    # 使用 level="datetime" 以兼容 MultiIndex
+    # 计算 IC 和 Rank IC
     ic_df = pd.concat(
         [
             pred_label.groupby(level="datetime")
@@ -192,38 +218,54 @@ def _pred_ic(
         axis=1,
     )
 
-    # 2. IC 时序图
-    if kwargs.get("show_nature_day", False):
+    # 按自然日填充
+    if show_nature_day:
         date_index = pd.date_range(ic_df.index.min(), ic_df.index.max())
-        ic_df_reindexed = ic_df.reindex(date_index)
-    else:
-        ic_df_reindexed = ic_df
+        ic_df = ic_df.reindex(date_index)
 
-    # 使用 Line 模式绘制 IC 时序 (ScatterGraph)
-    graph_ts = ScatterGraph(
-        df=ic_df_reindexed,
-        config=MODEL_PERFORMANCE_CONFIG,
-        layout={
-            "title": "Information Coefficient (IC)",
-            "width": "100%",
-        },
-        graph_kwargs={
-            "mode": "lines",
-        },
+    return ic_df
+
+
+def _pred_ic(
+    pred_label: pd.DataFrame,
+    methods: Sequence[str] = ("IC", "Rank IC"),
+    config=None,
+    **kwargs,
+) -> List[object]:
+    """
+    绘制 IC 分析图 (IC/Rank IC 时序, Daily IC 热力图, IC 分布 + Q-Q 图)
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        methods: 计算方法列表
+        config: 可选的配置
+
+    Returns:
+        图表对象列表
+    """
+    from ..graph import plot_timeseries, plot_calendar
+
+    # 1. 计算
+    show_nature_day = kwargs.get("show_nature_day", False)
+    ic_df = compute_ic(pred_label, methods, show_nature_day)
+
+    # 2. IC 时序图
+    ic_ts_config = config or MODEL_PERFORMANCE_CONFIG
+    graph_ts_fig = plot_timeseries(
+        ic_df,
+        config=ic_ts_config,
+        title="Information Coefficient (IC)",
+        layout={"width": "100%"},
     )
 
     # 3. Daily IC Calendar Heatmap
-    # 取第一列 (通常是 IC) 的日度数据
-    _ic = ic_df.iloc[:, 0]
-
-    # 确保 index 是 DatetimeIndex（处理可能的 MultiIndex）
+    _ic = ic_df.iloc[:, 0]  # 取第一列 (通常是 IC)
     if isinstance(_ic.index, pd.MultiIndex):
-        # 提取 datetime level
         _ic.index = _ic.index.get_level_values("datetime")
 
-    # 直接使用日度 IC 数据创建 Calendar Heatmap
-    graph_calendar = CalendarGraph(
-        df=_ic.to_frame("IC"),
+    graph_calendar_fig = plot_calendar(
+        _ic.to_frame("IC"),
+        title="Daily IC Calendar",
         layout=IC_CALENDAR_LAYOUT,
         graph_kwargs={
             "visual_map_min": _ic.min(),
@@ -238,16 +280,13 @@ def _pred_ic(
                 "left": "75%",
                 "top": "top",
                 "inRange": {
-                    # A股审美：负值绿色（跌），正值红色（涨）
-                    # 使用现代前端配色：柔和渐变 + 高对比度
                     "color": ["#10b981", "#6ee7b7", "#f3f4f6", "#fca5a5", "#ef4444"]
                 },
             },
         },
     )
 
-    # 4. IC 分布与 Q-Q 图 (使用 Grid 组合两个独立图表)
-    # 4.1 IC Distribution
+    # 4. IC 分布与 Q-Q 图 (使用 Grid 组合)
     _ic_df = _ic.to_frame("IC")
     _bin_size = float(((_ic_df.max() - _ic_df.min()) / 20).min())
 
@@ -258,7 +297,7 @@ def _pred_ic(
         graph_kwargs={"bin_size": _bin_size},
     )
 
-    # 4.2 Q-Q Plot (不使用 _plot_qq，直接在这里创建)
+    # Q-Q Plot
     _plt_fig = sm.qqplot(_ic.dropna(), dist=stats.norm, fit=True, line="45")
     plt.close(_plt_fig)
     qqplot_data = _plt_fig.gca().lines
@@ -272,7 +311,7 @@ def _pred_ic(
         layout=IC_QQ_LAYOUT,
     )
 
-    # 4.3 使用 Grid 组合
+    # 组合 Grid
     grid_ic_qq = (
         Grid(init_opts=opts.InitOpts(width="100%", height="500px"))
         .add(
@@ -285,26 +324,19 @@ def _pred_ic(
         )
     )
 
-    figs = [graph_ts.figure, graph_calendar.figure, grid_ic_qq]
-
-    return figs
+    return [graph_ts_fig, graph_calendar_fig, grid_ic_qq]
 
 
-def _pred_autocorr(pred_label: pd.DataFrame, lag: int = 1, **kwargs) -> List[object]:
+def compute_autocorr(pred_label: pd.DataFrame, lag: int = 1) -> pd.DataFrame:
     """
-    绘制预测值自相关性（Rank Correlation 时序图）
-
-    计算每日预测值与滞后预测值的 Spearman 秩相关系数，
-    并绘制时序散点图展示自相关随时间的变化趋势。
+    计算预测值自相关性（Rank Correlation 时序）
 
     Args:
-        pred_label: 包含 score 和 label 的 DataFrame，
-                   MultiIndex (datetime, instrument)
+        pred_label: 包含 score 和 label 的 DataFrame，MultiIndex (datetime, instrument)
         lag: 滞后期数，默认为 1
-        show_notebook: 是否在 notebook 中显示
 
     Returns:
-        pyecharts 图表对象
+        DataFrame，index 为日期，列为 value（自相关系数）
     """
     pred = pred_label.copy()
 
@@ -319,48 +351,61 @@ def _pred_autocorr(pred_label: pd.DataFrame, lag: int = 1, **kwargs) -> List[obj
     )
 
     # 3. 转换为 DataFrame
-    _df = ac.to_frame("value")
+    return ac.to_frame("value")
 
-    # 4. 使用 ScatterGraph 绘制时序图
-    graph = ScatterGraph(
-        df=_df,
+
+def _pred_autocorr(
+    pred_label: pd.DataFrame, lag: int = 1, config=None, **kwargs
+) -> List[object]:
+    """
+    绘制预测值自相关性（Rank Correlation 时序图）
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        lag: 滞后期数，默认为 1
+        config: 可选的 GraphDisplayConfig 配置
+
+    Returns:
+        pyecharts 图表对象列表
+    """
+    from ..display_config import AUTOCORR_CONFIG
+    from ..graph import plot_timeseries
+
+    # 1. 计算
+    df = compute_autocorr(pred_label, lag)
+
+    # 2. 可视化
+    config = config or AUTOCORR_CONFIG
+    fig = plot_timeseries(
+        df,
+        config=config,
+        title=f"Auto Correlation (Lag={lag})",
         layout={
-            "title": f"Auto Correlation (Lag={lag})",
             "width": "100%",
             "height": 400,
             "xaxis": {"title": "Date"},
             "yaxis": {"title": "Rank Correlation"},
         },
-        graph_kwargs={
-            "mode": "lines",
-            "is_show_legend": False,
-            "tooltip_formatter": JsCode(get_number_formatter(4)),
-        },
     )
 
-    return [graph.figure]
+    return [fig]
 
 
-def _pred_turnover(
-    pred_label: pd.DataFrame,
-    N: int = 5,
-    lag: int = 1,
-    **kwargs,  # 接收可能的额外参数
-) -> List[object]:
+def compute_turnover(
+    pred_label: pd.DataFrame, N: int = 5, lag: int = 1
+) -> pd.DataFrame:
     """
-    绘制 Top/Bottom 组合换手率 (基于分位数分组)
+    计算 Top/Bottom 组合换手率 (基于分位数分组)
 
     Turnover = 1 - (此期组合与上期组合重合数 / 组合总数)
-    衡量 Alpha 信号的稳定性及潜在交易成本。
 
     Args:
         pred_label: 包含 score 和 label 的 DataFrame
         N: 分组数，默认为 5 (即 Top/Bottom 20%)
         lag: 滞后期数，默认为 1
-        show_notebook: 是否在 notebook 中显示
 
     Returns:
-        pyecharts 图表对象
+        DataFrame，index 为日期，columns 为 ["Top", "Bottom"]
     """
     pred = pred_label.copy()
     score = pred["score"]
@@ -398,28 +443,49 @@ def _pred_turnover(
         turnover = 1 - (overlap / count_curr)
         turnover_data[name] = turnover.fillna(0)
 
-    df_turnover = pd.DataFrame(turnover_data)
+    return pd.DataFrame(turnover_data)
 
-    # 4. 绘图
-    graph = ScatterGraph(
-        df=df_turnover,
+
+def _pred_turnover(
+    pred_label: pd.DataFrame,
+    N: int = 5,
+    lag: int = 1,
+    config=None,
+    **kwargs,
+) -> List[object]:
+    """
+    绘制 Top/Bottom 组合换手率
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        N: 分组数，默认为 5 (即 Top/Bottom 20%)
+        lag: 滞后期数，默认为 1
+        config: 可选的 GraphDisplayConfig 配置
+
+    Returns:
+        pyecharts 图表对象列表
+    """
+    from ..display_config import TURNOVER_CONFIG
+    from ..graph import plot_timeseries
+
+    # 1. 计算
+    df = compute_turnover(pred_label, N, lag)
+
+    # 2. 可视化
+    config = config or TURNOVER_CONFIG
+    fig = plot_timeseries(
+        df,
+        config=config,
+        title=f"Top-Bottom Turnover (Lag={lag}, N={N})",
         layout={
-            "title": f"Top-Bottom Turnover (Lag={lag}, N={N})",
             "width": "100%",
             "height": 400,
             "xaxis": {"title": "Date"},
             "yaxis": {"title": "Turnover Rate"},
         },
-        graph_kwargs={
-            "mode": "lines",
-            "is_show_legend": True,
-            "legend_pos_left": "75%",
-            "tooltip_formatter": JsCode(get_percent_formatter(2)),
-            "axis_formatter": JsCode(get_axis_percent_formatter(2)),
-        },
     )
 
-    return [graph.figure]  # 返回列表以适配 model_performance_graph
+    return [fig]
 
 
 # ==============================================================================

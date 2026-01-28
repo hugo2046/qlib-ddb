@@ -141,6 +141,47 @@ IC_QQ_CONFIG = GraphDisplayConfig(
     height=500,
 )
 
+# ============================================================
+# 通用可视化函数预设配置
+# 用于 plot_timeseries, plot_distribution, plot_qq, plot_calendar
+# ============================================================
+
+# 时序图通用配置
+TIMESERIES_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(pos_right="5%", pos_left=None),
+    tooltip_formatter=JsCode(get_number_formatter(4)),
+)
+
+# 自相关图配置 (隐藏图例)
+AUTOCORR_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+    tooltip_formatter=JsCode(get_number_formatter(4)),
+)
+
+# 换手率图配置 (百分比格式，图例右侧)
+TURNOVER_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(pos_left="75%"),
+    tooltip_formatter=JsCode(get_percent_formatter(2)),
+    axis_formatter=JsCode(get_axis_percent_formatter(2)),
+)
+
+# 分布图配置
+DIST_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+    tooltip_formatter=JsCode(get_number_formatter(2)),
+)
+
+# QQ 图配置
+QQ_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+    tooltip_formatter=JsCode(get_number_formatter(2)),
+)
+
+# 日历热力图配置 (A股审美：绿跌红涨)
+CALENDAR_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+)
+
 
 @dataclass
 class SubplotsConfig:

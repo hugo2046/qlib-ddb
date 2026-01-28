@@ -1805,3 +1805,141 @@ class CalendarGraph(BaseGraph):
                     "left": "center",
                     "top": "10",
                 }
+
+
+# ============================================================
+# 通用可视化函数 (Convenience Plot Functions)
+# 提供简洁的绑定数据+配置→图表的调用方式
+# ============================================================
+
+
+def plot_timeseries(
+    df: pd.DataFrame,
+    config=None,
+    title: str = None,
+    layout: dict = None,
+    graph_kwargs: dict = None,
+):
+    """
+    时序折线图
+
+    Args:
+        df: 数据 DataFrame (index 为日期，columns 为系列)
+        config: GraphDisplayConfig 配置对象
+        title: 图表标题
+        layout: 布局覆盖参数
+        graph_kwargs: 图表参数覆盖
+
+    Returns:
+        pyecharts 图表对象
+    """
+    _layout = {"title": title} if title else {}
+    if layout:
+        _layout.update(layout)
+
+    _graph_kwargs = {"mode": "lines"}
+    if graph_kwargs:
+        _graph_kwargs.update(graph_kwargs)
+
+    return ScatterGraph(
+        df=df,
+        config=config,
+        layout=_layout,
+        graph_kwargs=_graph_kwargs,
+    ).figure
+
+
+def plot_distribution(
+    df: pd.DataFrame,
+    config=None,
+    title: str = None,
+    layout: dict = None,
+    graph_kwargs: dict = None,
+):
+    """
+    分布图 (KDE + Histogram)
+
+    Args:
+        df: 数据 DataFrame
+        config: GraphDisplayConfig 配置对象
+        title: 图表标题
+        layout: 布局覆盖参数
+        graph_kwargs: 图表参数覆盖 (如 bin_size)
+
+    Returns:
+        pyecharts 图表对象
+    """
+    _layout = {"title": title} if title else {}
+    if layout:
+        _layout.update(layout)
+
+    return DistplotGraph(
+        df=df,
+        config=config,
+        layout=_layout,
+        graph_kwargs=graph_kwargs or {},
+    ).figure
+
+
+def plot_qq(
+    series: pd.Series,
+    config=None,
+    title: str = None,
+    layout: dict = None,
+    graph_kwargs: dict = None,
+):
+    """
+    QQ 图 (Quantile-Quantile Plot)
+
+    Args:
+        series: 数据 Series
+        config: GraphDisplayConfig 配置对象
+        title: 图表标题
+        layout: 布局覆盖参数
+        graph_kwargs: 图表参数覆盖
+
+    Returns:
+        pyecharts 图表对象
+    """
+    _layout = {"title": title} if title else {}
+    if layout:
+        _layout.update(layout)
+
+    return QQPlotGraph(
+        series=series,
+        config=config,
+        layout=_layout,
+        graph_kwargs=graph_kwargs or {},
+    ).figure
+
+
+def plot_calendar(
+    df: pd.DataFrame,
+    config=None,
+    title: str = None,
+    layout: dict = None,
+    graph_kwargs: dict = None,
+):
+    """
+    日历热力图
+
+    Args:
+        df: 数据 DataFrame (index 为日期，单列值)
+        config: GraphDisplayConfig 配置对象
+        title: 图表标题
+        layout: 布局覆盖参数
+        graph_kwargs: 图表参数覆盖 (如 visualMap, tooltip)
+
+    Returns:
+        pyecharts 图表对象
+    """
+    _layout = {"title": title} if title else {}
+    if layout:
+        _layout.update(layout)
+
+    return CalendarGraph(
+        df=df,
+        config=config,
+        layout=_layout,
+        graph_kwargs=graph_kwargs or {},
+    ).figure
