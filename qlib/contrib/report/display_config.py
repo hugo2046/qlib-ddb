@@ -300,3 +300,9 @@ IC_QQ_LAYOUT = {
     "xaxis": {"title": "Normal Distribution Quantile"},
     "yaxis": {"title": "Observed Quantile"},
 }
+
+IC_CALENDAR_LAYOUT = {
+    "title": "Daily IC",
+    "width": "100%",
+    "height": "600px",
+}

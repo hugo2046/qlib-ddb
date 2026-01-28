@@ -28,7 +28,9 @@ from qlib.contrib.report.graph import (
     DistplotGraph,
     ScatterGraph,
     SubplotsGraph,
+    CalendarGraph,
     get_number_formatter,
+    get_calendar_formatter,
     get_axis_percent_formatter,
 )
 from ..display_config import (
@@ -41,6 +43,7 @@ from ..display_config import (
     IC_DIST_CONFIG,
     IC_SUBPLOTS_CONFIG,
     IC_QQ_CONFIG,
+    IC_CALENDAR_LAYOUT,
 )
 
 # ==============================================================================
@@ -208,40 +211,32 @@ def _pred_ic(
         },
     )
 
-    # 3. Monthly IC 热力图
-    # 取第一列 (通常是 IC) 计算月度均值
+    # 3. Daily IC Calendar Heatmap
+    # 取第一列 (通常是 IC) 的日度数据
     _ic = ic_df.iloc[:, 0]
 
-    # 计算月度 IC (按 YYYYMM 分组)
-    _index = (
-        _ic.index.get_level_values(0).astype("str").str.replace("-", "").str.slice(0, 6)
-    )
-    _monthly_ic = _ic.groupby(_index).mean()
+    # 确保 index 是 DatetimeIndex（处理可能的 MultiIndex）
+    if isinstance(_ic.index, pd.MultiIndex):
+        # 提取 datetime level
+        _ic.index = _ic.index.get_level_values("datetime")
 
-    # 重构 MultiIndex (Year, Month)
-    _monthly_ic.index = pd.MultiIndex.from_arrays(
-        [_monthly_ic.index.str.slice(0, 4), _monthly_ic.index.str.slice(4, 6)],
-        names=["year", "month"],
-    )
-
-    # 填充缺失月份
-    start_year = _index.min()[:4]
-    end_year = _index.max()[:4]
-    # 使用 'M' 作为频率 (MonthEnd)
-    _month_list = pd.date_range(f"{start_year}0101", f"{end_year}1231", freq="M")
-    _years = [d.strftime("%Y") for d in _month_list]
-    _months = [d.strftime("%m") for d in _month_list]
-    fill_index = pd.MultiIndex.from_arrays([_years, _months], names=["year", "month"])
-
-    _monthly_ic = _monthly_ic.reindex(fill_index)
-
-    # 热力图: Unstack 后 Index=Year, Columns=Month
-    graph_heatmap = HeatmapGraph(
-        _monthly_ic.unstack(),
-        layout=IC_HEATMAP_LAYOUT,
+    # 直接使用日度 IC 数据创建 Calendar Heatmap
+    graph_calendar = CalendarGraph(
+        df=_ic.to_frame("IC"),
+        layout=IC_CALENDAR_LAYOUT,
         graph_kwargs={
-            "visual_map_min": _monthly_ic.min(),
-            "visual_map_max": _monthly_ic.max(),
+            "visual_map_min": _ic.min(),
+            "visual_map_max": _ic.max(),
+            "tooltip": {
+                "position": "top",
+                "formatter": JsCode(get_calendar_formatter(4)),
+            },
+            "visualMap": {
+                "calculable": True,
+                "orient": "horizontal",
+                "left": "75%",
+                "top": "top",
+            },
         },
     )
 
@@ -284,7 +279,7 @@ def _pred_ic(
         )
     )
 
-    figs = [graph_ts.figure, graph_heatmap.figure, grid_ic_qq]
+    figs = [graph_ts.figure, graph_calendar.figure, grid_ic_qq]
 
     return figs
 

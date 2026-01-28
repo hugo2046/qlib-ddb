@@ -195,6 +195,30 @@ def get_axis_percent_formatter(decimals: int = 0) -> str:
     return f"function(value) {{ return (value * 100).toFixed({decimals}) + ' %'; }}"
 
 
+def get_calendar_formatter(decimals: int = 2, use_comma: bool = True) -> str:
+    """生成 Calendar Heatmap 专用的 Tooltip 格式化 JavaScript 代码
+
+    该函数生成适用于 Calendar Heatmap (trigger="item") 的 formatter。
+    与 get_number_formatter 不同，此函数处理单个 params 对象而非数组。
+
+    Args:
+        decimals (int): 小数位数，默认为 2 位
+        use_comma (bool): 是否使用千分位分隔符，默认为 True
+
+    Returns:
+        str: JavaScript 函数字符串
+
+    Example:
+        >>> from pyecharts.commons.utils import JsCode
+        >>> formatter = JsCode(get_calendar_formatter(decimals=4))
+    """
+    if use_comma:
+        # 单行格式，避免换行符导致的潜在问题
+        return f"function(params){{var date=params.value[0];var val=params.value[1];if(val==null)return date;var num=Number(val).toFixed({decimals});var parts=num.split('.');parts[0]=parts[0].replace(/\\\\B(?=(\\\\d{{3}})+(?!\\\\d))/g,',');var formatted=parts.join('.');return date+'\u003cbr/\u003e'+params.marker+formatted;}}"
+    else:
+        return f"function(params){{var date=params.value[0];var val=params.value[1];if(val==null)return date;var num=Number(val).toFixed({decimals});return date+'\u003cbr/\u003e'+params.marker+num;}}"
+
+
 def get_number_formatter(decimals: int = 2, use_comma: bool = True) -> str:
     """生成 Tooltip 数字格式化 JavaScript 代码
 
@@ -1549,3 +1573,235 @@ class QQPlotGraph(BaseGraph):
             and len(self.chart.options["title"]) > 0
         ):
             self.chart.options["title"][0]["textAlign"] = "center"
+
+
+class CalendarGraph(BaseGraph):
+    """
+    ECharts Calendar Heatmap 图表
+
+    用于以日历形式展示时间序列数据，适合可视化日度/月度 IC 等指标。
+
+    数据格式要求：
+    - DataFrame 的 index 应为 DatetimeIndex
+    - 第一列为数值数据
+
+    自动支持：
+    - 单年模式：使用 pyecharts Calendar API
+    - 多年模式：使用原生 JSON 配置（多个 calendar 组件）
+    """
+
+    _name = "calendar"
+
+    def _init_chart(self):
+        """初始化 Calendar 图表"""
+        from pyecharts.charts import Calendar
+        import datetime
+
+        if self._df is None or self._df.empty:
+            self.chart = Calendar()
+            return
+
+        # 1. 数据准备
+        # 确保 index 是 DatetimeIndex
+        if not isinstance(self._df.index, pd.DatetimeIndex):
+            raise ValueError("CalendarGraph requires DataFrame with DatetimeIndex")
+
+        # 获取第一列数据
+        values = self._df.iloc[:, 0]
+
+        # 生成日期-值对：[[date_str, value], ...]
+        data = [
+            [idx.strftime("%Y-%m-%d"), float(val)]
+            for idx, val in values.items()
+            if pd.notna(val)
+        ]
+
+        if not data:
+            self.chart = Calendar()
+            return
+
+        # 2. 提取年份范围
+        years = sorted(self._df.index.year.unique())
+        self._years = years
+        self._data = data
+
+        # 3. 根据年份数量选择模式
+        if len(years) == 1:
+            # 单年模式：使用 pyecharts API
+            self.chart = self._create_single_year_calendar(years[0], data)
+        else:
+            # 多年模式：使用原生 JSON 配置
+            self.chart = self._create_multi_year_calendar(years, data)
+
+    def _create_single_year_calendar(self, year, data):
+        """创建单年 Calendar Heatmap（使用 pyecharts API）"""
+        from pyecharts.charts import Calendar
+
+        calendar = Calendar(
+            init_opts=opts.InitOpts(
+                width=self._layout.get("width", "100%"),
+                height=self._layout.get("height", "600px"),
+            )
+        )
+
+        calendar.add(
+            series_name="",
+            yaxis_data=data,
+            calendar_opts=opts.CalendarOpts(
+                range_=str(year),
+                pos_top="120",
+                pos_left="30",
+                pos_right="30",
+            ),
+        )
+
+        return calendar
+
+    def _create_multi_year_calendar(self, years, data):
+        """创建多年 Calendar Heatmap（使用原生 JSON 配置）"""
+        from pyecharts.charts import Calendar
+
+        # 按年份分组数据
+        data_by_year = {}
+        for year in years:
+            year_str = str(year)
+            data_by_year[year] = [[d, v] for d, v in data if d.startswith(year_str)]
+
+        # 计算数值范围
+        values = [v for _, v in data]
+        min_val = min(values) if values else 0
+        max_val = max(values) if values else 1
+
+        # 动态计算高度
+        height = 100 + len(years) * 190
+
+        # 从 graph_kwargs 获取配置（支持外部传入）
+        tooltip_config = self._graph_kwargs.get("tooltip", {"position": "top"}).copy()
+        visual_map_config = self._graph_kwargs.get(
+            "visualMap",
+            {
+                "min": float(min_val),
+                "max": float(max_val),
+                "calculable": True,
+                "orient": "horizontal",
+                "left": "85%",
+                "top": "-5%",
+            },
+        ).copy()
+
+        # 处理 JsCode 对象（多年模式需要手动序列化）
+        from pyecharts.commons.utils import JsCode
+
+        if "formatter" in tooltip_config:
+            formatter = tooltip_config["formatter"]
+            if isinstance(formatter, JsCode):
+                # 提取 JS 代码字符串
+                tooltip_config["formatter"] = formatter.js_code
+
+        # 如果 visualMap 未指定 min/max，使用数据范围
+        if "min" not in visual_map_config:
+            visual_map_config["min"] = float(min_val)
+        if "max" not in visual_map_config:
+            visual_map_config["max"] = float(max_val)
+
+        # 构建原生 ECharts option
+        option = {
+            "tooltip": tooltip_config,
+            "visualMap": visual_map_config,
+            "calendar": [
+                {
+                    "range": str(year),
+                    "cellSize": ["auto", 20],
+                    "top": 100 + i * 190,
+                    "left": 50,
+                    "right": 50,
+                    "yearLabel": {"show": True},
+                }
+                for i, year in enumerate(years)
+            ],
+            "series": [
+                {
+                    "type": "heatmap",
+                    "coordinateSystem": "calendar",
+                    "calendarIndex": i,
+                    "data": data_by_year[year],
+                }
+                for i, year in enumerate(years)
+            ],
+        }
+
+        # 使用 Calendar 作为基础并直接设置 options（pyecharts 2.0.9 兼容）
+        chart = Calendar(
+            init_opts=opts.InitOpts(
+                width=self._layout.get("width", "100%"),
+                height=f"{height}px",
+            )
+        )
+        chart.options = option
+
+        return chart
+
+    def _apply_global_opts(self):
+        """应用全局配置"""
+        if not self.chart:
+            return
+
+        # 单年模式：使用 set_global_opts
+        if len(self._years) == 1:
+            # 获取配置
+            visual_map_min = self._graph_kwargs.get("visual_map_min", None)
+            visual_map_max = self._graph_kwargs.get("visual_map_max", None)
+
+            # 如果未指定，从数据计算
+            if visual_map_min is None or visual_map_max is None:
+                values = [v for _, v in self._data]
+                if not visual_map_min:
+                    visual_map_min = min(values) if values else 0
+                if not visual_map_max:
+                    visual_map_max = max(values) if values else 1
+
+            # 从 graph_kwargs 获取 visualMap 配置
+            visual_map_config = self._graph_kwargs.get("visualMap", {})
+            visual_map_orient = visual_map_config.get("orient", "horizontal")
+            visual_map_pos_left = visual_map_config.get("left", "center")
+            visual_map_pos_top = visual_map_config.get("top", "60")
+            is_piecewise = visual_map_config.get("is_piecewise", False)
+
+            # 从 graph_kwargs 获取 tooltip 配置
+            tooltip_config = self._graph_kwargs.get("tooltip", {})
+            tooltip_formatter = tooltip_config.get("formatter", None)
+
+            tooltip_opts = (
+                opts.TooltipOpts(
+                    trigger="item",
+                    formatter=tooltip_formatter,
+                )
+                if tooltip_formatter
+                else opts.TooltipOpts(trigger="item")
+            )
+
+            self.chart.set_global_opts(
+                title_opts=opts.TitleOpts(
+                    title=self._layout.get("title", ""),
+                    pos_top="30",
+                    pos_left="center",
+                ),
+                visualmap_opts=opts.VisualMapOpts(
+                    min_=float(visual_map_min),
+                    max_=float(visual_map_max),
+                    orient=visual_map_orient,
+                    is_piecewise=is_piecewise,
+                    pos_left=visual_map_pos_left,
+                    pos_top=visual_map_pos_top,
+                ),
+                tooltip_opts=tooltip_opts,
+            )
+        else:
+            # 多年模式：直接修改 options（已在 _create_multi_year_calendar 设置）
+            # 添加 title
+            if "title" not in self.chart.options:
+                self.chart.options["title"] = {
+                    "text": self._layout.get("title", ""),
+                    "left": "center",
+                    "top": "10",
+                }
