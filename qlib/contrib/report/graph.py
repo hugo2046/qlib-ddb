@@ -754,19 +754,64 @@ class DistplotGraph(BaseGraph):
         """Distplot 特有的全局配置"""
         if not self.chart:
             return
-        super()._apply_global_opts()
 
-        # 获取用户自定义的 tooltip_formatter（如果有）
+        # 1. 获取基础配置（复制自 BaseGraph 逻辑）
+        is_show_legend = self._graph_kwargs.get("is_show_legend", True)
+        legend_pos_top = self._graph_kwargs.get("legend_pos_top", "5%")
+        legend_pos_left = self._graph_kwargs.get("legend_pos_left", "0%")
+        legend_pos_right = self._graph_kwargs.get("legend_pos_right", None)
+        legend_orient = self._graph_kwargs.get("legend_orient", "horizontal")
+
+        if legend_pos_right is not None:
+            legend_pos_left = None
+
+        legend_data = self._graph_kwargs.get("legend_data", None)
+
+        # 标准化 formatter
+        axis_formatter = self._normalize_formatter(
+            self._graph_kwargs.get("axis_formatter", None)
+        )
         tooltip_formatter = self._normalize_formatter(
             self._graph_kwargs.get("tooltip_formatter", None)
         )
 
-        # 强制更新一些适合 Distplot 的配置
+        # 2. 创建 Legend 配置
+        _legend_opts = opts.LegendOpts(
+            is_show=is_show_legend,
+            pos_top=legend_pos_top,
+            pos_left=legend_pos_left,
+            pos_right=legend_pos_right,
+            orient=legend_orient,
+        )
+        if legend_data:
+            _legend_opts.opts["data"] = legend_data
+
+        # 3. 创建 yaxis 配置
+        yaxis_opts = opts.AxisOpts(
+            is_scale=True,
+            axislabel_opts=opts.LabelOpts(formatter=axis_formatter),
+            splitline_opts=opts.SplitLineOpts(
+                is_show=True,
+                linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
+            ),
+        )
+
+        # 4. 一次性设置所有配置（包括 Distplot 特有的 xaxis 配置）
         self.chart.set_global_opts(
+            title_opts=opts.TitleOpts(
+                title=self._layout.get("title", ""),
+                pos_left=self._layout.get("title_pos_left", "center"),
+            ),
+            tooltip_opts=opts.TooltipOpts(
+                trigger="axis",
+                axis_pointer_type="shadow",  # Distplot 使用 shadow 模式
+                formatter=tooltip_formatter,
+            ),
+            legend_opts=_legend_opts,
             xaxis_opts=opts.AxisOpts(
-                type_="category",
+                type_="category",  # Distplot 特有
                 is_scale=True,
-                axislabel_opts=opts.LabelOpts(rotate=45),
+                axislabel_opts=opts.LabelOpts(rotate=45),  # Distplot 特有
                 name_location="middle",
                 name_gap=30,
                 splitline_opts=opts.SplitLineOpts(
@@ -774,13 +819,18 @@ class DistplotGraph(BaseGraph):
                     linestyle_opts=opts.LineStyleOpts(opacity=0.5, type_="dashed"),
                 ),
             ),
-            # 如果用户提供了自定义 formatter，使用用户的；否则使用默认的 shadow 模式
-            tooltip_opts=opts.TooltipOpts(
-                trigger="axis",
-                axis_pointer_type="shadow",
-                formatter=tooltip_formatter,
-            ),
+            yaxis_opts=yaxis_opts,
         )
+
+        # 5. 手动添加 textAlign 到 title（Grid 布局需要）
+        # TitleOpts 不支持 textAlign 参数，需要手动注入
+        if isinstance(self.chart.options.get("title"), dict):
+            self.chart.options["title"]["textAlign"] = "center"
+        elif (
+            isinstance(self.chart.options.get("title"), list)
+            and len(self.chart.options["title"]) > 0
+        ):
+            self.chart.options["title"][0]["textAlign"] = "center"
 
 
 class HeatmapGraph(BaseGraph):
@@ -1426,17 +1476,53 @@ class QQPlotGraph(BaseGraph):
         self.chart.overlap(line)
 
     def _apply_global_opts(self):
-        super()._apply_global_opts()
+        # 1. 获取基础配置
+        is_show_legend = self._graph_kwargs.get("is_show_legend", True)
+        legend_pos_top = self._graph_kwargs.get("legend_pos_top", "5%")
+        legend_pos_left = self._graph_kwargs.get("legend_pos_left", "0%")
+        legend_pos_right = self._graph_kwargs.get("legend_pos_right", None)
+        legend_orient = self._graph_kwargs.get("legend_orient", "horizontal")
 
-        # Extract configuration from layout
+        if legend_pos_right is not None:
+            legend_pos_left = None
+
+        legend_data = self._graph_kwargs.get("legend_data", None)
+
+        # 标准化 formatter
+        tooltip_formatter = self._normalize_formatter(
+            self._graph_kwargs.get("tooltip_formatter", None)
+        )
+
+        # 2. 创建 Legend 配置
+        _legend_opts = opts.LegendOpts(
+            is_show=is_show_legend,
+            pos_top=legend_pos_top,
+            pos_left=legend_pos_left,
+            pos_right=legend_pos_right,
+            orient=legend_orient,
+        )
+        if legend_data:
+            _legend_opts.opts["data"] = legend_data
+
+        # 3. Extract configuration from layout
         title_text = self._layout.get("title", "")
         xaxis_title = self._layout.get("xaxis", {}).get(
             "title", "Theoretical Quantiles"
         )
         yaxis_title = self._layout.get("yaxis", {}).get("title", "Sample Quantiles")
 
+        # 4. 一次性设置所有配置
         self.chart.set_global_opts(
-            title_opts=opts.TitleOpts(title=title_text),
+            title_opts=opts.TitleOpts(
+                title=title_text,
+                pos_left=self._layout.get("title_pos_left", "center"),
+            ),
+            tooltip_opts=opts.TooltipOpts(
+                trigger="axis",
+                axis_pointer_type="line",
+                formatter=tooltip_formatter,
+            ),
+            legend_opts=_legend_opts,
             xaxis_opts=opts.AxisOpts(
                 type_="value",
                 name=xaxis_title,
@@ -1454,3 +1540,12 @@ class QQPlotGraph(BaseGraph):
                 splitline_opts=opts.SplitLineOpts(is_show=False),
             ),
         )
+
+        # 5. 手动添加 textAlign 到 title（Grid 布局需要）
+        if isinstance(self.chart.options.get("title"), dict):
+            self.chart.options["title"]["textAlign"] = "center"
+        elif (
+            isinstance(self.chart.options.get("title"), list)
+            and len(self.chart.options["title"]) > 0
+        ):
+            self.chart.options["title"][0]["textAlign"] = "center"

@@ -33,10 +33,14 @@ from qlib.contrib.report.graph import (
 )
 from ..display_config import (
     GROUP_RETURN_SUBPLOTS_CONFIG,
+    GROUP_RETURN_CONFIG,
     MODEL_PERFORMANCE_CONFIG,
     IC_HEATMAP_LAYOUT,
     IC_DIST_LAYOUT,
     IC_QQ_LAYOUT,
+    IC_DIST_CONFIG,
+    IC_SUBPLOTS_CONFIG,
+    IC_QQ_CONFIG,
 )
 
 # ==============================================================================
@@ -88,7 +92,7 @@ def _group_return(
     if reverse:
         df["score"] *= -1
 
-    # 1. 分箱
+    # 1. 分箱-升序排列
     def get_group(x):
         try:
             return pd.qcut(x, N, labels=False, duplicates="drop")
@@ -102,15 +106,15 @@ def _group_return(
     group_ret.columns = [f"Group{i+1}" for i in range(len(group_ret.columns))]
 
     # 3. 计算多空收益 (Long-Short) - 基于日收益率计算
-    # 参考 Plotly 版本逻辑: Group1 - GroupN
+    # 分组默认升序排列top组-bottom组
     if not group_ret.empty:
-        group_ret["Long-Short"] = group_ret.iloc[:, 0] - group_ret.iloc[:, -1]
+        group_ret["Long-Short"] = group_ret.iloc[:, -1] - group_ret.iloc[:, 0]
 
     # 4. 计算多均收益 (Long-Average) - 基于日收益率计算
     daily_avg = df.groupby("datetime")["label"].mean()
     if not group_ret.empty:
-        # Long-Average = Group1 - Daily Average
-        group_ret["Long-Average"] = group_ret.iloc[:, 0] - daily_avg
+        # Long-Average = Top Group - Daily Average
+        group_ret["Long-Average"] = group_ret.iloc[:, -1] - daily_avg
 
     # 5. 计算累计收益 (用于绘制时序图)
     group_cum_ret = group_ret.cumsum()
@@ -241,47 +245,46 @@ def _pred_ic(
         },
     )
 
-    # 4. IC 分布与 Q-Q 图
-    # 4.1 分布图
+    # 4. IC 分布与 Q-Q 图 (使用 Grid 组合两个独立图表)
+    # 4.1 IC Distribution
     _ic_df = _ic.to_frame("IC")
     _bin_size = float(((_ic_df.max() - _ic_df.min()) / 20).min())
 
     graph_dist = DistplotGraph(
         df=_ic_df.dropna(),
+        config=IC_DIST_CONFIG,
         layout=IC_DIST_LAYOUT,
         graph_kwargs={"bin_size": _bin_size},
     )
 
-    # 4.2 Q-Q Plot
-    qq_figure = _plot_qq(_ic, show_notebook=False)
+    # 4.2 Q-Q Plot (不使用 _plot_qq，直接在这里创建)
+    _plt_fig = sm.qqplot(_ic.dropna(), dist=stats.norm, fit=True, line="45")
+    plt.close(_plt_fig)
+    qqplot_data = _plt_fig.gca().lines
+    x_data = qqplot_data[0].get_xdata()
+    y_data = qqplot_data[0].get_ydata()
+    df_qq = pd.DataFrame({"Sample Quantiles": y_data}, index=x_data)
 
-    # 4.3 组合在一个 Grid 中 (类似于 SubplotsGraph 效果)
-    # 手动调整子图的 Title 位置和 Legend
-    # Dist Plot: Left 5% ~ 45% (Width 40%), Center ~ 25%
-    graph_dist.chart.set_global_opts(
-        legend_opts=opts.LegendOpts(is_show=False),
-        title_opts=opts.TitleOpts(title="IC Distribution", pos_left="25%"),
+    graph_qq = QQPlotGraph(
+        df=df_qq,
+        config=IC_QQ_CONFIG,
+        layout=IC_QQ_LAYOUT,
     )
 
-    # QQ Plot: Left 55% ~ 95% (Width 40%), Center ~ 75%
-    qq_figure.set_global_opts(
-        legend_opts=opts.LegendOpts(is_show=False),
-        title_opts=opts.TitleOpts(title="IC Normal Dist. Q-Q", pos_left="75%"),
-    )
-
-    grid_hist_qq = (
+    # 4.3 使用 Grid 组合
+    grid_ic_qq = (
         Grid(init_opts=opts.InitOpts(width="100%", height="500px"))
         .add(
             graph_dist.figure,
-            grid_opts=opts.GridOpts(pos_left="5%", pos_right="55%", pos_top="20%"),
+            grid_opts=opts.GridOpts(pos_left="5%", pos_right="55%", pos_top="15%"),
         )
         .add(
-            qq_figure,
-            grid_opts=opts.GridOpts(pos_left="55%", pos_right="5%", pos_top="20%"),
+            graph_qq.figure,
+            grid_opts=opts.GridOpts(pos_left="55%", pos_right="5%", pos_top="15%"),
         )
     )
 
-    figs = [graph_ts.figure, graph_heatmap.figure, grid_hist_qq]
+    figs = [graph_ts.figure, graph_heatmap.figure, grid_ic_qq]
 
     return figs
 

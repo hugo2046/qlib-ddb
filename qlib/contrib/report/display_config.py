@@ -24,6 +24,7 @@ from .graph import (
 class LegendConfig:
     """图例配置"""
 
+    is_show: bool = True  # 是否显示图例
     pos_left: str = "0%"
     pos_right: Optional[str] = None
     pos_top: str = "4%"
@@ -58,6 +59,7 @@ class GraphDisplayConfig:
         if self.legend:
             result.update(
                 {
+                    "is_show_legend": self.legend.is_show,
                     "legend_pos_left": self.legend.pos_left,
                     "legend_pos_right": self.legend.pos_right,
                     "legend_pos_top": self.legend.pos_top,
@@ -123,6 +125,20 @@ SCORE_IC_CONFIG = GraphDisplayConfig(
     tooltip_formatter=JsCode(get_number_formatter(2)),
     series_colors={"Rank IC": "#f0811e"},
     height=400,
+)
+
+# IC Distribution 配置（隐藏图例，用于 Grid 布局中的子图）
+IC_DIST_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+    tooltip_formatter=JsCode(get_number_formatter(2)),
+    height=500,
+)
+
+# IC QQ Plot 配置（隐藏图例）
+IC_QQ_CONFIG = GraphDisplayConfig(
+    legend=LegendConfig(is_show=False),
+    tooltip_formatter=JsCode(get_number_formatter(2)),
+    height=500,
 )
 
 
@@ -237,6 +253,30 @@ GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
     ),  # kwargs will be updated with bin_size
 )
 
+# IC Analysis Subplots Config (IC Distribution + QQ Plot)
+IC_SUBPLOTS_CONFIG = SubplotsConfig(
+    layout=dict(
+        height=500,
+        width="100%",
+    ),
+    subplots_kwargs=dict(
+        rows=1,
+        cols=2,
+        print_grid=False,
+        subplot_titles=["IC Distribution", "IC Normal Dist. Q-Q"],
+    ),
+    kind_map=dict(
+        kind="DistplotGraph",  # Default kind
+        kwargs=dict(
+            is_show_legend=False,
+            tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
+            axis_formatter=JsCode(get_axis_number_formatter(2)),
+            title_top_offset=-6,
+            axis_pointer_type="shadow",
+        ),
+    ),
+)
+
 
 # Analysis Model Performance Layouts
 IC_HEATMAP_LAYOUT = {
@@ -247,12 +287,14 @@ IC_HEATMAP_LAYOUT = {
 
 IC_DIST_LAYOUT = {
     "title": "IC Distribution",
+    "title_pos_left": "20%",
     "width": "100%",
-    "height": 400,
+    "height": 500,
 }
 
 IC_QQ_LAYOUT = {
     "title": "IC Normal Dist. Q-Q",
+    "title_pos_left": "65%",
     "width": "100%",
     "height": 500,
     "xaxis": {"title": "Normal Distribution Quantile"},
