@@ -32,6 +32,7 @@ from qlib.contrib.report.graph import (
     get_number_formatter,
     get_calendar_formatter,
     get_axis_percent_formatter,
+    get_percent_formatter,
 )
 from ..display_config import (
     GROUP_RETURN_SUBPLOTS_CONFIG,
@@ -236,6 +237,11 @@ def _pred_ic(
                 "orient": "horizontal",
                 "left": "75%",
                 "top": "top",
+                "inRange": {
+                    # A股审美：负值绿色（跌），正值红色（涨）
+                    # 使用现代前端配色：柔和渐变 + 高对比度
+                    "color": ["#10b981", "#6ee7b7", "#f3f4f6", "#fca5a5", "#ef4444"]
+                },
             },
         },
     )
@@ -284,49 +290,136 @@ def _pred_ic(
     return figs
 
 
-def _pred_autocorr(
-    pred_label: pd.DataFrame, lag: int = 1, show_notebook: bool = True
-) -> object:
+def _pred_autocorr(pred_label: pd.DataFrame, lag: int = 1, **kwargs) -> List[object]:
     """
-    绘制预测值自相关性
+    绘制预测值自相关性（Rank Correlation 时序图）
+
+    计算每日预测值与滞后预测值的 Spearman 秩相关系数，
+    并绘制时序散点图展示自相关随时间的变化趋势。
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame，
+                   MultiIndex (datetime, instrument)
+        lag: 滞后期数，默认为 1
+        show_notebook: 是否在 notebook 中显示
+
+    Returns:
+        pyecharts 图表对象
     """
-    score = pred_label["score"]
+    pred = pred_label.copy()
 
-    # 1. 计算 Lag 1-5 的自相关系数
-    ac_data = {}
-    lags = range(1, 6)
+    # 1. 计算滞后值（按股票分组）
+    pred["score_last"] = pred.groupby(level="instrument", group_keys=False)[
+        "score"
+    ].shift(lag)
 
-    # 将数据转为 Panel 格式 (Index: date, Columns: instrument) 以加速计算
-    try:
-        score_unstack = score.unstack(level="instrument")
-    except Exception:
-        score_unstack = score.reset_index().pivot(
-            index="datetime", columns="instrument", values="score"
-        )
-
-    for l in lags:
-        # 计算每只股票的自相关系数，取平均
-        ac = score_unstack.apply(lambda x: x.autocorr(lag=l)).mean()
-        ac_data[f"Lag-{l}"] = ac
-
-    df_ac = pd.DataFrame(
-        list(ac_data.values()), index=list(ac_data.keys()), columns=["Autocorr"]
+    # 2. 按日期分组，计算每日的 Rank Correlation
+    ac = pred.groupby(level="datetime", group_keys=False).apply(
+        lambda x: x["score"].corr(x["score_last"], method="spearman")
     )
 
-    # 2. 绘图 (柱状图)
-    graph = BarGraph(
-        df=df_ac,
+    # 3. 转换为 DataFrame
+    _df = ac.to_frame("value")
+
+    # 4. 使用 ScatterGraph 绘制时序图
+    graph = ScatterGraph(
+        df=_df,
         layout={
-            "title": "Prediction Autocorrelation",
+            "title": f"Auto Correlation (Lag={lag})",
             "width": "100%",
             "height": 400,
-            "yaxis": {"title": "Autocorrelation Coefficient"},
+            "xaxis": {"title": "Date"},
+            "yaxis": {"title": "Rank Correlation"},
+        },
+        graph_kwargs={
+            "mode": "lines",
+            "is_show_legend": False,
+            "tooltip_formatter": JsCode(get_number_formatter(4)),
         },
     )
 
-    if show_notebook:
-        BarGraph.show_graph_in_notebook([graph.figure])
-    return graph.figure
+    return [graph.figure]
+
+
+def _pred_turnover(
+    pred_label: pd.DataFrame,
+    N: int = 5,
+    lag: int = 1,
+    **kwargs,  # 接收可能的额外参数
+) -> List[object]:
+    """
+    绘制 Top/Bottom 组合换手率 (基于分位数分组)
+
+    Turnover = 1 - (此期组合与上期组合重合数 / 组合总数)
+    衡量 Alpha 信号的稳定性及潜在交易成本。
+
+    Args:
+        pred_label: 包含 score 和 label 的 DataFrame
+        N: 分组数，默认为 5 (即 Top/Bottom 20%)
+        lag: 滞后期数，默认为 1
+        show_notebook: 是否在 notebook 中显示
+
+    Returns:
+        pyecharts 图表对象
+    """
+    pred = pred_label.copy()
+    score = pred["score"]
+
+    # 1. 分组 (Quantile Binning)
+    def get_group(x):
+        try:
+            return pd.qcut(x, N, labels=False, duplicates="drop")
+        except ValueError:
+            return np.nan
+
+    # 计算每日的分组 (0 到 N-1)
+    groups = score.groupby(level="datetime", group_keys=False).apply(get_group)
+
+    # 2. 转换为宽表加速计算
+    try:
+        group_df = groups.unstack(level="instrument")
+    except Exception:
+        group_df = groups.reset_index().pivot(
+            index="datetime", columns="instrument", values="score"
+        )
+
+    # 3. 计算 Top/Bottom 换手率
+    group_df_last = group_df.shift(lag)
+    top_group = N - 1
+    bottom_group = 0
+
+    turnover_data = {}
+
+    for name, g_id in [("Top", top_group), ("Bottom", bottom_group)]:
+        mask_curr = group_df == g_id
+        mask_last = group_df_last == g_id
+        count_curr = mask_curr.sum(axis=1)
+        overlap = (mask_curr & mask_last).sum(axis=1)
+        turnover = 1 - (overlap / count_curr)
+        turnover_data[name] = turnover.fillna(0)
+
+    df_turnover = pd.DataFrame(turnover_data)
+
+    # 4. 绘图
+    graph = ScatterGraph(
+        df=df_turnover,
+        layout={
+            "title": f"Top-Bottom Turnover (Lag={lag}, N={N})",
+            "width": "100%",
+            "height": 400,
+            "xaxis": {"title": "Date"},
+            "yaxis": {"title": "Turnover Rate"},
+        },
+        graph_kwargs={
+            "mode": "lines",
+            "is_show_legend": True,
+            "legend_pos_left": "75%",
+            "tooltip_formatter": JsCode(get_percent_formatter(2)),
+            "axis_formatter": JsCode(get_axis_percent_formatter(2)),
+        },
+    )
+
+    return [graph.figure]  # 返回列表以适配 model_performance_graph
 
 
 # ==============================================================================
@@ -341,7 +434,7 @@ def model_performance_graph(
     N: int = 5,
     reverse: bool = False,
     rank: bool = False,
-    graph_names: list = ["group_return", "pred_ic", "pred_autocorr"],
+    graph_names: list = ["group_return", "pred_ic", "pred_autocorr", "pred_turnover"],
     show_notebook: bool = True,
     **kwargs,
 ) -> List[object]:
