@@ -2,7 +2,6 @@
 # Licensed under the MIT License.
 
 import abc
-import pickle
 from pathlib import Path
 import warnings
 import pandas as pd
@@ -11,6 +10,7 @@ from typing import Tuple, Union, List, Dict, Optional
 
 from qlib.data import D
 from qlib.utils import load_dataset, init_instance_by_config, time_to_slc_point
+from qlib.utils.pickle_utils import restricted_pickle_load
 from qlib.log import get_module_logger
 from qlib.utils.serial import Serializable
 
@@ -303,8 +303,11 @@ class StaticDataLoader(DataLoader, Serializable):
             )
             self._data.sort_index(inplace=True)
         elif isinstance(self._config, (str, Path)):
-            with Path(self._config).open("rb") as f:
-                self._data = pickle.load(f)
+            if str(self._config).strip().endswith(".parquet"):
+                self._data = pd.read_parquet(self._config, engine="pyarrow")
+            else:
+                with Path(self._config).open("rb") as f:
+                    self._data = restricted_pickle_load(f)
         elif isinstance(self._config, pd.DataFrame):
             self._data = self._config
 
