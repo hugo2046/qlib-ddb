@@ -103,7 +103,7 @@ IC_GRAPH_CONFIG = GraphDisplayConfig(
 )
 
 GROUP_RETURN_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="30%", pos_top="4%"),
+    legend=LegendConfig(pos_left="20%", pos_top="4%"),
     tooltip_formatter=JsCode(get_percent_formatter(4)),
 )
 
