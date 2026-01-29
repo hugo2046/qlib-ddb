@@ -1672,8 +1672,20 @@ class CalendarGraph(BaseGraph):
         min_val = min(values) if values else 0
         max_val = max(values) if values else 1
 
-        # 动态计算高度
-        height = 100 + len(years) * 190
+        # 紧凑布局：年份间留小间距
+        # 第一年预留空间给月份标签(~100px) + 日历高度(~120px)
+        # 后续年份仅需日历高度(~120px) + 间距
+        first_year_top = 100  # 顶部留白 + 月份标签空间
+        calendar_height = 120  # 每个日历的高度
+        year_spacing = 6  # 年份间小间距
+        bottom_padding = 20  # 底部留白，确保最后一年边框完整显示
+
+        total_height = (
+            first_year_top
+            + len(years) * calendar_height
+            + (len(years) - 1) * year_spacing
+            + bottom_padding
+        )
 
         # 从 graph_kwargs 获取配置（支持外部传入）
         tooltip_config = self._graph_kwargs.get("tooltip", {"position": "top"}).copy()
@@ -1704,21 +1716,40 @@ class CalendarGraph(BaseGraph):
         if "max" not in visual_map_config:
             visual_map_config["max"] = float(max_val)
 
+        # 构建原生 ECharts option - 紧凑垂直堆叠布局
+        calendars = []
+        for i, year in enumerate(years):
+            # 计算当前年份的 top 位置
+            if i == 0:
+                top = first_year_top
+            else:
+                top = first_year_top + i * (calendar_height + year_spacing)
+
+            calendar_config = {
+                "range": str(year),
+                "cellSize": ["auto", 18],  # 稍微减小单元格高度
+                "top": top,
+                "left": 80,  # 左侧留空给年份标签
+                "right": 50,
+                "yearLabel": {
+                    "show": True,
+                    "fontSize": 14,
+                },
+                "monthLabel": {
+                    "show": i == 0,  # 只有第一个日历显示月份标签
+                    "fontSize": 12,
+                },
+                "dayLabel": {
+                    "show": False,  # 隐藏星期标签以节省空间
+                },
+            }
+            calendars.append(calendar_config)
+
         # 构建原生 ECharts option
         option = {
             "tooltip": tooltip_config,
             "visualMap": visual_map_config,
-            "calendar": [
-                {
-                    "range": str(year),
-                    "cellSize": ["auto", 20],
-                    "top": 100 + i * 190,
-                    "left": 50,
-                    "right": 50,
-                    "yearLabel": {"show": True},
-                }
-                for i, year in enumerate(years)
-            ],
+            "calendar": calendars,
             "series": [
                 {
                     "type": "heatmap",
@@ -1734,7 +1765,7 @@ class CalendarGraph(BaseGraph):
         chart = Calendar(
             init_opts=opts.InitOpts(
                 width=self._layout.get("width", "100%"),
-                height=f"{height}px",
+                height=f"{total_height}px",
             )
         )
         chart.options = option
