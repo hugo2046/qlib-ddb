@@ -33,6 +33,7 @@ from qlib.contrib.report.graph import (
     get_calendar_formatter,
     get_axis_percent_formatter,
     get_percent_formatter,
+    get_default_init_opts,
 )
 from ..display_config import (
     GROUP_RETURN_SUBPLOTS_CONFIG,
@@ -311,9 +312,9 @@ def _pred_ic(
         layout=IC_QQ_LAYOUT,
     )
 
-    # 组合 Grid
+    # 组合 Grid（使用白色主题）
     grid_ic_qq = (
-        Grid(init_opts=opts.InitOpts(width="100%", height="500px"))
+        Grid(init_opts=get_default_init_opts(width="100%", height=500))
         .add(
             graph_dist.figure,
             grid_opts=opts.GridOpts(pos_left="5%", pos_right="55%", pos_top="15%"),

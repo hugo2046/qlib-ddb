@@ -22,6 +22,32 @@ from pyecharts.globals import ThemeType
 from scipy.stats import gaussian_kde
 
 # ============================================================================
+# 全局图表初始化配置
+# ============================================================================
+
+def get_default_init_opts(width: str = "100%", height: int = 400) -> opts.InitOpts:
+    """获取默认的图表初始化配置
+    
+    使用白色主题以确保在 Jupyter Notebook 中正确显示。
+    
+    Args:
+        width: 图表宽度，默认 "100%"
+        height: 图表高度，默认 400
+        
+    Returns:
+        opts.InitOpts: pyecharts 初始化配置对象
+    """
+    if isinstance(height, int):
+        height = f"{height}px"
+    return opts.InitOpts(
+        width=width,
+        height=height,
+        theme=ThemeType.WHITE,  # 使用白色主题避免 Notebook 显示问题
+        bg_color="#ffffff",  # 明确设置背景为白色
+    )
+
+
+# ============================================================================
 # Jupyter 环境检测与适配
 # ============================================================================
 
@@ -600,7 +626,11 @@ class ScatterGraph(BaseGraph):
     _name = "scatter"
 
     def _init_chart(self):
-        self.chart = Line()
+        # 使用默认配置初始化图表（白色主题）
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", 400)
+        self.chart = Line(init_opts=get_default_init_opts(width, height))
+        
         x_data = self._df.index.astype(str).tolist()
         self.chart.add_xaxis(x_data)
 
@@ -652,7 +682,11 @@ class BarGraph(BaseGraph):
     _name = "bar"
 
     def _init_chart(self):
-        self.chart = Bar()
+        # 使用默认配置初始化图表（白色主题）
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", 400)
+        self.chart = Bar(init_opts=get_default_init_opts(width, height))
+        
         x_data = self._df.index.astype(str).tolist()
 
         self.chart.add_xaxis(x_data)
@@ -861,7 +895,10 @@ class HeatmapGraph(BaseGraph):
     _name = "heatmap"
 
     def _init_chart(self):
-        self.chart = HeatMap()
+        # 使用默认配置初始化图表（白色主题）
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", 400)
+        self.chart = HeatMap(init_opts=get_default_init_opts(width, height))
         x_axis = self._df.columns.tolist()
         y_axis = self._df.index.astype(str).tolist()
         self.chart.add_xaxis(x_axis)
@@ -882,8 +919,10 @@ class HistogramGraph(BaseGraph):
     _name = "histogram"
 
     def _init_chart(self):
-        # 初始化 Bar
-        self.chart = Bar()
+        # 使用默认配置初始化图表（白色主题）
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", 400)
+        self.chart = Bar(init_opts=get_default_init_opts(width, height))
 
         # 获取配置参数
         bin_size = self._graph_kwargs.get("bin_size", None)
@@ -1212,9 +1251,11 @@ class SubplotsGraph:
         if isinstance(canvas_height, int):
             canvas_height = f"{canvas_height}px"
 
+        # 使用统一的初始化配置（白色主题）
         self._grid = Grid(
-            init_opts=opts.InitOpts(
-                width=canvas_width, height=canvas_height, theme=ThemeType.WHITE
+            init_opts=get_default_init_opts(
+                width=canvas_width if isinstance(canvas_width, str) else f"{canvas_width}px",
+                height=int(canvas_height.replace("px", "")) if isinstance(canvas_height, str) and "px" in canvas_height else 1000
             )
         )
 
@@ -1472,7 +1513,10 @@ class QQPlotGraph(BaseGraph):
     _name = "qqplot"
 
     def _init_chart(self):
-        self.chart = Scatter()
+        # 使用默认配置初始化图表（白色主题）
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", 500)
+        self.chart = Scatter(init_opts=get_default_init_opts(width, height))
         # Use index as Theoretical Quantiles (X), first column as Sample Quantiles (Y)
         x_data = self._df.index.tolist()
         y_data = self._df.iloc[:, 0].tolist()
@@ -1637,11 +1681,15 @@ class CalendarGraph(BaseGraph):
         """创建单年 Calendar Heatmap（使用 pyecharts API）"""
         from pyecharts.charts import Calendar
 
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", "600px")
+        if isinstance(height, str) and height.endswith("px"):
+            height_val = int(height.replace("px", ""))
+        else:
+            height_val = 600
+            
         calendar = Calendar(
-            init_opts=opts.InitOpts(
-                width=self._layout.get("width", "100%"),
-                height=self._layout.get("height", "600px"),
-            )
+            init_opts=get_default_init_opts(width, height_val)
         )
 
         calendar.add(
@@ -1660,6 +1708,17 @@ class CalendarGraph(BaseGraph):
     def _create_multi_year_calendar(self, years, data):
         """创建多年 Calendar Heatmap（使用原生 JSON 配置）"""
         from pyecharts.charts import Calendar
+
+        width = self._layout.get("width", "100%")
+        height = self._layout.get("height", "600px")
+        if isinstance(height, str) and height.endswith("px"):
+            height_val = int(height.replace("px", ""))
+        else:
+            height_val = 600
+            
+        calendar = Calendar(
+            init_opts=get_default_init_opts(width, height_val)
+        )
 
         # 按年份分组数据
         data_by_year = {}

@@ -7,18 +7,15 @@
 - 图例位置
 - 颜色配置
 - 工具提示格式化
+- 全局图表初始化配置
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 from pyecharts.commons.utils import JsCode
-from .graph import (
-    get_percent_formatter,
-    get_axis_percent_formatter,
-    get_number_formatter,
-    get_axis_number_formatter,
-)
 
+# 从 graph.py 导入（避免循环引用）
+# get_default_init_opts 现在在 graph.py 中定义
 
 @dataclass
 class LegendConfig:
@@ -85,99 +82,159 @@ class ReportGraphConfig(GraphDisplayConfig):
             pos_left=None, pos_right="5%", pos_top="4%"
         )
     )
-    # 报告使用百分比格式化
-    tooltip_formatter: Optional[JsCode] = field(
-        default_factory=lambda: JsCode(get_percent_formatter(2))
-    )
-    axis_formatter: Optional[JsCode] = field(
-        default_factory=lambda: JsCode(get_axis_percent_formatter(2))
-    )
+    
+    def __post_init__(self):
+        """延迟初始化格式化器"""
+        if self.tooltip_formatter is None:
+            from .graph import get_percent_formatter
+            self.tooltip_formatter = JsCode(get_percent_formatter(2))
+        if self.axis_formatter is None:
+            from .graph import get_axis_percent_formatter
+            self.axis_formatter = JsCode(get_axis_percent_formatter(2))
 
 
-# 预定义配置实例
+# ==============================================================================
+# 预定义配置实例（使用延迟初始化避免循环导入）
+# ==============================================================================
+
+# 缓存变量
+_cached_configs = {}
+
+def _get_or_create_config(config_name, factory_func):
+    """获取或创建配置对象（带缓存）"""
+    if config_name not in _cached_configs:
+        _cached_configs[config_name] = factory_func()
+    return _cached_configs[config_name]
+
+# 报告默认配置
 REPORT_DEFAULT_CONFIG = ReportGraphConfig()
 
-IC_GRAPH_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="75%", pos_top="4%"),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-)
+# IC 图配置
+def _create_ic_graph_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_left="75%", pos_top="4%"),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+    )
 
-GROUP_RETURN_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="20%", pos_top="4%"),
-    tooltip_formatter=JsCode(get_percent_formatter(4)),
-)
+IC_GRAPH_CONFIG = _create_ic_graph_config()
+
+# 分组收益配置
+def _create_group_return_config():
+    from .graph import get_percent_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_left="20%", pos_top="4%"),
+        tooltip_formatter=JsCode(get_percent_formatter(4)),
+    )
+
+GROUP_RETURN_CONFIG = _create_group_return_config()
 
 # 风险分析配置（图例在左侧，高度500）
 RISK_ANALYSIS_CONFIG = GraphDisplayConfig(
     legend=LegendConfig(pos_left="0%", pos_top="5%"), height=500
 )
 
-# 模型性能配置（图例在右侧70%，使用2位小数格式化，高度400）
-MODEL_PERFORMANCE_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="70%", pos_top="4%"),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-    height=400,
-)
+# 模型性能配置
+def _create_model_performance_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_left="70%", pos_top="4%"),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+        height=400,
+    )
 
-# Score IC 配置（图例在右侧75%，Rank IC为橙色，高度400）
-SCORE_IC_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="75%", pos_top="4%"),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-    series_colors={"Rank IC": "#f0811e"},
-    height=400,
-)
+MODEL_PERFORMANCE_CONFIG = _create_model_performance_config()
 
-# IC Distribution 配置（隐藏图例，用于 Grid 布局中的子图）
-IC_DIST_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(is_show=False),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-    height=500,
-)
+# Score IC 配置
+def _create_score_ic_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_left="75%", pos_top="4%"),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+        series_colors={"Rank IC": "#f0811e"},
+        height=400,
+    )
 
-# IC QQ Plot 配置（隐藏图例）
-IC_QQ_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(is_show=False),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-    height=500,
-)
+SCORE_IC_CONFIG = _create_score_ic_config()
+
+# IC Distribution 配置
+def _create_ic_dist_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(is_show=False),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+        height=500,
+    )
+
+IC_DIST_CONFIG = _create_ic_dist_config()
+
+# IC QQ Plot 配置
+def _create_ic_qq_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(is_show=False),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+        height=500,
+    )
+
+IC_QQ_CONFIG = _create_ic_qq_config()
 
 # ============================================================
 # 通用可视化函数预设配置
-# 用于 plot_timeseries, plot_distribution, plot_qq, plot_calendar
 # ============================================================
 
 # 时序图通用配置
-TIMESERIES_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_right="5%", pos_left=None),
-    tooltip_formatter=JsCode(get_number_formatter(4)),
-)
+def _create_timeseries_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_right="5%", pos_left=None),
+        tooltip_formatter=JsCode(get_number_formatter(4)),
+    )
 
-# 自相关图配置 (隐藏图例)
-AUTOCORR_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(is_show=False),
-    tooltip_formatter=JsCode(get_number_formatter(4)),
-)
+TIMESERIES_CONFIG = _create_timeseries_config()
 
-# 换手率图配置 (百分比格式，图例右侧)
-TURNOVER_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(pos_left="75%"),
-    tooltip_formatter=JsCode(get_percent_formatter(2)),
-    axis_formatter=JsCode(get_axis_percent_formatter(2)),
-)
+# 自相关图配置
+def _create_autocorr_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(is_show=False),
+        tooltip_formatter=JsCode(get_number_formatter(4)),
+    )
+
+AUTOCORR_CONFIG = _create_autocorr_config()
+
+# 换手率图配置
+def _create_turnover_config():
+    from .graph import get_percent_formatter, get_axis_percent_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(pos_left="75%"),
+        tooltip_formatter=JsCode(get_percent_formatter(2)),
+        axis_formatter=JsCode(get_axis_percent_formatter(2)),
+    )
+
+TURNOVER_CONFIG = _create_turnover_config()
 
 # 分布图配置
-DIST_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(is_show=False),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-)
+def _create_dist_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(is_show=False),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+    )
+
+DIST_CONFIG = _create_dist_config()
 
 # QQ 图配置
-QQ_CONFIG = GraphDisplayConfig(
-    legend=LegendConfig(is_show=False),
-    tooltip_formatter=JsCode(get_number_formatter(2)),
-)
+def _create_qq_config():
+    from .graph import get_number_formatter
+    return GraphDisplayConfig(
+        legend=LegendConfig(is_show=False),
+        tooltip_formatter=JsCode(get_number_formatter(2)),
+    )
 
-# 日历热力图配置 (A股审美：绿跌红涨)
+QQ_CONFIG = _create_qq_config()
+
+# 日历热力图配置
 CALENDAR_CONFIG = GraphDisplayConfig(
     legend=LegendConfig(is_show=False),
 )
@@ -193,130 +250,150 @@ class SubplotsConfig:
 
 
 # Backtest Analysis Report Subplots Config
-REPORT_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout=dict(
-        height=1200,
-        width="100%",
-        title="Backtest Analysis Report",
-        title_pos_left="center",
-    ),
-    subplots_kwargs=dict(
-        rows=7,
-        cols=1,
-        row_width=[1, 1, 1, 3, 1, 1, 3],  # Bottom-to-Top
-        vertical_spacing=0.03,
-        shared_xaxes=True,
-    ),
-    kind_map=dict(
-        kind="ScatterGraph",
-        kwargs={
-            "mode": "lines+markers",
-            "fill": "tozeroy",
-            "legend_pos_left": None,
-            "legend_pos_right": "5%",
-            "tooltip_formatter": JsCode(get_percent_formatter(2)),
-            "axis_formatter": JsCode(get_axis_percent_formatter(2)),
-            "title_top_offset": -6,
-        },
-    ),
-)
+def _create_report_subplots_config():
+    from .graph import get_percent_formatter, get_axis_percent_formatter
+    return SubplotsConfig(
+        layout=dict(
+            height=1200,
+            width="100%",
+            title="Backtest Analysis Report",
+            title_pos_left="center",
+        ),
+        subplots_kwargs=dict(
+            rows=7,
+            cols=1,
+            row_width=[1, 1, 1, 3, 1, 1, 3],  # Bottom-to-Top
+            vertical_spacing=0.03,
+            shared_xaxes=True,
+        ),
+        kind_map=dict(
+            kind="ScatterGraph",
+            kwargs={
+                "mode": "lines+markers",
+                "fill": "tozeroy",
+                "legend_pos_left": None,
+                "legend_pos_right": "5%",
+                "tooltip_formatter": JsCode(get_percent_formatter(2)),
+                "axis_formatter": JsCode(get_axis_percent_formatter(2)),
+                "title_top_offset": -6,
+            },
+        ),
+    )
+
+REPORT_SUBPLOTS_CONFIG = _create_report_subplots_config()
 
 # Risk Analysis Bar Chart Config
-RISK_ANALYSIS_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout={"height": 460},
-    subplots_kwargs={
-        "rows": 4,
-        "cols": 1,
-        "row_width": [1] * 4,
-        "vertical_spacing": 0.05,
-    },
-    kind_map=dict(
-        kind="BarGraph",
-        kwargs={
-            "xy_reverse": False,
-            "is_show_label": False,
-            "is_show_legend": False,
-            "axis_formatter": JsCode(get_axis_number_formatter(3)),
-            "tooltip_formatter": JsCode(get_number_formatter(4)),
+def _create_risk_analysis_subplots_config():
+    from .graph import get_axis_number_formatter, get_number_formatter
+    return SubplotsConfig(
+        layout={"height": 460},
+        subplots_kwargs={
+            "rows": 4,
+            "cols": 1,
+            "row_width": [1] * 4,
+            "vertical_spacing": 0.05,
         },
-    ),
-)
+        kind_map=dict(
+            kind="BarGraph",
+            kwargs={
+                "xy_reverse": False,
+                "is_show_label": False,
+                "is_show_legend": False,
+                "axis_formatter": JsCode(get_axis_number_formatter(3)),
+                "tooltip_formatter": JsCode(get_number_formatter(4)),
+            },
+        ),
+    )
+
+RISK_ANALYSIS_SUBPLOTS_CONFIG = _create_risk_analysis_subplots_config()
 
 # Risk Analysis Monthly Line Chart Config
-MONTHLY_RISK_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout={
-        "height": 1000,
-        "title": "Monthly Risk Analysis",
-        "width": "100%",
-        "title_pos_left": "center",
-    },
-    subplots_kwargs={
-        "cols": 1,
-        # rows will be set dynamically
-        "shared_xaxes": True,
-        "vertical_spacing": 0.05,
-    },
-    kind_map=dict(
-        kind="ScatterGraph",
-        kwargs={
-            "mode": "lines+markers",
-            "legend_pos_left": None,
-            "legend_pos_right": "5%",
-            "legend_pos_top": None,
-            "title_top_offset": -4,
-            "is_show_legend": True,
-            "tooltip_formatter": JsCode(get_percent_formatter(2)),
-            "axis_formatter": JsCode(get_axis_percent_formatter(2)),
+def _create_monthly_risk_subplots_config():
+    from .graph import get_percent_formatter, get_axis_percent_formatter
+    return SubplotsConfig(
+        layout={
+            "height": 1000,
+            "title": "Monthly Risk Analysis",
+            "width": "100%",
+            "title_pos_left": "center",
         },
-    ),
-)
+        subplots_kwargs={
+            "cols": 1,
+            # rows will be set dynamically
+            "shared_xaxes": True,
+            "vertical_spacing": 0.05,
+        },
+        kind_map=dict(
+            kind="ScatterGraph",
+            kwargs={
+                "mode": "lines+markers",
+                "legend_pos_left": None,
+                "legend_pos_right": "5%",
+                "legend_pos_top": None,
+                "title_top_offset": -4,
+                "is_show_legend": True,
+                "tooltip_formatter": JsCode(get_percent_formatter(2)),
+                "axis_formatter": JsCode(get_axis_percent_formatter(2)),
+            },
+        ),
+    )
+
+MONTHLY_RISK_SUBPLOTS_CONFIG = _create_monthly_risk_subplots_config()
 
 # Model Performance Group Return Config
-GROUP_RETURN_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout=dict(
-        height=400,
-    ),
-    subplots_kwargs=dict(
-        rows=1,
-        cols=2,
-        print_grid=False,
-        subplot_titles=["Long-Short", "Long-Average"],
-    ),
-    kind_map=dict(
-        kind="DistplotGraph",
-        kwargs=dict(
-            is_show_legend=False,
-            tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
-            axis_formatter=JsCode(get_axis_number_formatter(2)),
-            title_top_offset=-6,  # 增加标题向上偏移量，避免与绘图区重叠
-            axis_pointer_type="shadow",
+def _create_group_return_subplots_config():
+    from .graph import get_number_formatter, get_axis_number_formatter
+    return SubplotsConfig(
+        layout=dict(
+            height=400,
         ),
-    ),  # kwargs will be updated with bin_size
-)
+        subplots_kwargs=dict(
+            rows=1,
+            cols=2,
+            print_grid=False,
+            subplot_titles=["Long-Short", "Long-Average"],
+        ),
+        kind_map=dict(
+            kind="DistplotGraph",
+            kwargs=dict(
+                is_show_legend=False,
+                tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
+                axis_formatter=JsCode(get_axis_number_formatter(2)),
+                title_top_offset=-6,  # 增加标题向上偏移量，避免与绘图区重叠
+                axis_pointer_type="shadow",
+            ),
+        ),  # kwargs will be updated with bin_size
+    )
+
+GROUP_RETURN_SUBPLOTS_CONFIG = _create_group_return_subplots_config()
 
 # IC Analysis Subplots Config (IC Distribution + QQ Plot)
-IC_SUBPLOTS_CONFIG = SubplotsConfig(
-    layout=dict(
-        height=500,
-        width="100%",
-    ),
-    subplots_kwargs=dict(
-        rows=1,
-        cols=2,
-        print_grid=False,
-        subplot_titles=["IC Distribution", "IC Normal Dist. Q-Q"],
-    ),
-    kind_map=dict(
-        kind="DistplotGraph",  # Default kind
-        kwargs=dict(
-            is_show_legend=False,
-            tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
-            axis_formatter=JsCode(get_axis_number_formatter(2)),
-            title_top_offset=-6,
-            axis_pointer_type="shadow",
+def _create_ic_subplots_config():
+    from .graph import get_number_formatter, get_axis_number_formatter
+    return SubplotsConfig(
+        layout=dict(
+            height=500,
+            width="100%",
         ),
-    ),
-)
+        subplots_kwargs=dict(
+            rows=1,
+            cols=2,
+            print_grid=False,
+            subplot_titles=["IC Distribution", "IC Normal Dist. Q-Q"],
+        ),
+        kind_map=dict(
+            kind="DistplotGraph",  # Default kind
+            kwargs=dict(
+                is_show_legend=False,
+                tooltip_formatter=JsCode(get_number_formatter(decimals=2)),
+                axis_formatter=JsCode(get_axis_number_formatter(2)),
+                title_top_offset=-6,
+                axis_pointer_type="shadow",
+            ),
+        ),
+    )
+
+IC_SUBPLOTS_CONFIG = _create_ic_subplots_config()
 
 
 # Analysis Model Performance Layouts
