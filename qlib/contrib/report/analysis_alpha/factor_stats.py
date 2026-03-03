@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 from loguru import logger
-from typing import Optional, Dict, List, Union, Tuple
-from datetime import datetime
+from typing import Optional, Dict, Union, Tuple
 
 try:
     from rich.console import Console
@@ -94,7 +93,7 @@ class FactorGrouper:
     def __init__(
         self,
         n_groups: int = 5,
-        ascending: bool = False,  # 默认降序，Group 1为最大值
+        ascending: bool = True,  # 默认升序，Group 1为最小值
         ignore_zeros: bool = False,
         max_nan_rate: float = 0.9,
         strict_mode: bool = False,
@@ -119,8 +118,8 @@ class FactorGrouper:
         if self.ignore_zeros:
             work_factor = work_factor.replace(0, np.nan)
 
-        # 质量检查
-        self._check_data_quality(work_factor)
+        # 数据质量检查（获取初始统计信息）
+        initial_stats = self._check_data_quality(work_factor)
 
         # 计算分位数边界
         quantiles = np.linspace(0, 1, self.n_groups + 1)
@@ -154,7 +153,7 @@ class FactorGrouper:
                 )
 
             # 执行组内等权分配处理
-            weights = mask.astype(float).div(mask.sum(axis=1), axis=0).fillna(0)
+            weights = mask.astype(float).div(mask.sum(axis=1), axis=0)
 
             # 确定分组ID
             # 如果 ascending=True (升序)，数值越小Group ID越小 -> i=0 (小值) -> Group 1
@@ -170,23 +169,171 @@ class FactorGrouper:
 
             portfolios[group_id] = weights
 
+        # 生成数据丢失报告（参考 Alphalens）
+        self._report_data_loss(initial_stats, portfolios, max_loss=self.max_nan_rate)
+
         return portfolios
 
-    def _check_data_quality(self, df: pd.DataFrame):
-        valid_count = df.count(axis=1)
-        # 硬性检查
-        if (valid_count < self.n_groups).any():
-            logger.warning(
-                f"Warning: Some dates have insufficient valid data to form {self.n_groups} groups."
+    def _check_data_quality(self, df: pd.DataFrame) -> Dict[str, float]:
+        """
+        检查因子数据质量并返回初始统计信息
+
+        参考 Alphalens 的数据质量检查逻辑，适配展开式 DataFrame 数据结构。
+
+        :param df: 因子 DataFrame (index=date, columns=stock)
+        :type df: pd.DataFrame
+        :return: 包含初始统计信息的字典
+        :rtype: Dict[str, float]
+        """
+        # 1. 初始数据统计
+        initial_total = float(df.size)  # 总元素数（日期数 × 股票数）
+        initial_valid = float(df.count().sum())  # 有效值总数
+        initial_nan_count = initial_total - initial_valid
+        initial_nan_rate = (
+            initial_nan_count / initial_total if initial_total > 0 else 0.0
+        )
+
+        # 2. 每日数据统计
+        daily_valid_count = df.count(axis=1)  # 每日有效股票数
+        daily_total_count = df.shape[1]  # 每日总股票数
+
+        # 3. 分组能力检查
+        # 检查每日是否有足够的不同值来进行分组
+        # 理论上需要至少 n_groups 个不同的有效值
+        daily_unique_count = df.apply(lambda row: row.dropna().nunique(), axis=1)
+        insufficient_days = (daily_unique_count < self.n_groups).sum()
+        total_days = len(df.index)
+        insufficient_rate = insufficient_days / total_days if total_days > 0 else 0.0
+
+        # 4. 高 NaN 率检查
+        daily_nan_rates = 1.0 - (daily_valid_count / daily_total_count)
+        max_daily_nan_rate = daily_nan_rates.max() if len(daily_nan_rates) > 0 else 0.0
+        high_nan_days = (daily_nan_rates > self.max_nan_rate).sum()
+        high_nan_rate = high_nan_days / total_days if total_days > 0 else 0.0
+
+        # 5. 生成警告信息
+        warnings = []
+
+        if initial_nan_rate > 0.5:
+            warnings.append(f"初始因子数据中有 {initial_nan_rate:.1%} 的缺失值")
+
+        if insufficient_days > 0:
+            warnings.append(
+                f"有 {insufficient_days}/{total_days} ({insufficient_rate:.1%}) 个交易日的不同有效值数量少于分组数 {self.n_groups}，"
+                f"这些日期的分组结果可能不理想"
             )
-        # 软性检查
-        nan_rates = 1.0 - (valid_count / df.shape[1])
-        if (nan_rates > self.max_nan_rate).any():
-            msg = f"High NaN Rate Warning: Max NaN rate is {nan_rates.max():.1%}."
-            if self.strict_mode:
-                raise DataQualityError(msg)
+
+        if high_nan_days > 0:
+            warnings.append(
+                f"有 {high_nan_days}/{total_days} ({high_nan_rate:.1%}) 个交易日的 NaN 比例超过阈值 {self.max_nan_rate:.1%}"
+            )
+
+        # 6. 输出警告或报错
+        if warnings:
+            warning_msg = "数据质量警告:\n" + "\n".join(f"  - {w}" for w in warnings)
+            if self.strict_mode and (insufficient_rate > 0.1 or high_nan_rate > 0.1):
+                raise DataQualityError(warning_msg)
             else:
-                logger.warning(msg)
+                logger.warning(warning_msg)
+
+        # 7. 返回统计信息供后续使用
+        return {
+            "initial_total": initial_total,
+            "initial_valid": initial_valid,
+            "initial_nan_count": initial_nan_count,
+            "initial_nan_rate": initial_nan_rate,
+            "total_days": float(total_days),
+            "insufficient_days": float(insufficient_days),
+            "insufficient_rate": insufficient_rate,
+            "max_daily_nan_rate": max_daily_nan_rate,
+        }
+
+    def _report_data_loss(
+        self,
+        initial_stats: Dict[str, float],
+        portfolios: Dict[int, pd.DataFrame],
+        max_loss: float = 0.35,
+    ):
+        """
+        报告数据丢失情况，参考 Alphalens 的报告格式
+
+        :param initial_stats: 初始数据统计信息（来自 _check_data_quality）
+        :type initial_stats: Dict[str, float]
+        :param portfolios: 分组后的持仓权重字典
+        :type portfolios: Dict[int, pd.DataFrame]
+        :param max_loss: 最大允许的数据丢失率阈值, 默认为 0.35
+        :type max_loss: float
+        """
+        # 1. 计算分组后的有效数据量
+        # 注意：weights 是归一化后的权重，非零权重代表有效分配
+        grouped_valid = 0.0
+        for weights_df in portfolios.values():
+            # 统计非零权重的数量（即有效分配到该组的股票-日期对数量）
+            grouped_valid += float((weights_df > 0).sum().sum())
+
+        # 2. 计算各阶段数据丢失
+        initial_total = initial_stats["initial_total"]
+        initial_valid = initial_stats["initial_valid"]
+        initial_nan_count = initial_stats["initial_nan_count"]
+
+        # 因子缺失导致的丢失
+        factor_loss_count = initial_nan_count
+        factor_loss_rate = (
+            factor_loss_count / initial_total if initial_total > 0 else 0.0
+        )
+
+        # 分组过程导致的丢失（边界处理、无法分组等）
+        # 注意：由于我们使用等权重分配，理论上所有有效值都应该被分配
+        # 但实际可能因为分位数边界重叠等原因导致部分数据未分配
+        binning_loss_count = initial_valid - grouped_valid
+        binning_loss_rate = (
+            binning_loss_count / initial_total if initial_total > 0 else 0.0
+        )
+
+        # 总丢失率
+        total_loss_count = initial_total - grouped_valid
+        total_loss_rate = total_loss_count / initial_total if initial_total > 0 else 0.0
+
+        # 3. 生成报告
+        report_lines = [
+            "=" * 70,
+            "数据质量检查报告 (参考 Alphalens 格式)",
+            "=" * 70,
+            f"初始因子数据: {int(initial_total)} 个数据点",
+            f"  - 有效值: {int(initial_valid)} ({initial_valid/initial_total:.1%})",
+            f"  - 缺失值 (NaN): {int(initial_nan_count)} ({factor_loss_rate:.1%})",
+            f"",
+            f"分组后有效数据: {int(grouped_valid)} 个权重分配",
+            f"",
+            f"数据丢失统计:",
+            f"  - 因子缺失导致: {int(factor_loss_count)} ({factor_loss_rate:.1%})",
+            f"  - 分组过程导致: {int(binning_loss_count)} ({binning_loss_rate:.1%})",
+            f"  - 总丢失率: {int(total_loss_count)} ({total_loss_rate:.1%})",
+        ]
+
+        # 4. 检查是否超过阈值
+        if total_loss_rate > max_loss:
+            report_lines.append("")
+            report_lines.append(
+                f"⚠️  警告: 总数据丢失率 {total_loss_rate:.1%} 超过阈值 {max_loss:.1%}"
+            )
+            if self.strict_mode:
+                report_lines.append("=" * 70)
+                error_msg = "\n".join(report_lines)
+                raise DataQualityError(
+                    f"数据丢失率超过阈值!\n{error_msg}\n"
+                    f"建议: 增加 max_loss 参数或检查数据质量"
+                )
+            else:
+                report_lines.append(f"   建议: 考虑增加 max_loss 参数或检查数据质量")
+        else:
+            report_lines.append("")
+            report_lines.append(f"✓ 数据丢失率在可接受范围内 (阈值: {max_loss:.1%})")
+
+        report_lines.append("=" * 70)
+
+        # 5. 输出报告
+        logger.info("\n" + "\n".join(report_lines))
 
 
 # ==========================================
@@ -225,11 +372,12 @@ class VectorExecutor:
         self.ic_method = ic_method
         self.delay = delay
 
-    def calc_ic(
+    def calculate_information_coefficient(
         self, factor: pd.DataFrame, returns: pd.DataFrame, method: str = None
     ) -> pd.Series:
         """
         计算 IC (信息系数)
+        完全对齐原始 factor_test.py 的 ic_calc 方法逻辑
 
         :param factor: 因子值 DataFrame
         :type factor: pd.DataFrame
@@ -242,215 +390,243 @@ class VectorExecutor:
         """
         method = method or self.ic_method
 
-        # 1. 对齐收益率 (T+1 收益，并充分考虑延迟 delay 参数)
-        # 假设 factor 在 T 日，预测 T+delay 日之后的收益
-        # 通常 IC 是 T日因子 vs T+1日收益
-        # 如果 delay=0，则使用 factor[t] 对应 returns[t] (由于行情数据多指 T 收盘，通常 T+1 更有预测意义)
-        # 如果 delay=1 (默认 T+1)，则不进行 shift (0) 相关性计算
-        # 原有stat逻辑: stock_return = trd_adjreturns.shift(delay - 1)
-        # 如果 delay=1 (默认T+1)，shift(0)，即使用当天的 return 序列（注意：return的timestamp定义很重要）
-        # 假设 returns 的 index t 代表 t日的收益（(P_t - P_{t-1})/P_{t-1}）
-        # 则 T日的factor 应该和 T+1日的 returns 进行相关性分析
-        # returns.shift(-1) 将 T+1 的收益移到 T
+        # ========================================
+        # 复刻原始 factor_test.py 的 ic_calc 逻辑
+        # ========================================
 
-        # 兼容性处理：若外部直接传入了对其好的 returns，则不需要 shift
-        # 这里遵循标准逻辑：factor[t] corr returns[t+delay]
-        # 所以我们需要把 returns 向以前 shift delay 天
-        # ret_aligned = returns.shift(-self.delay) # 暂时简化处理，假设传入的returns已经是对齐好的或者不需要内部shift复杂逻辑
-        # 原有stat原逻辑是：trd_adjreturns.shift(self.delay - 1)
-        # 如果 delay=1, shift(0). 也就是 factor[t] vs returns[t]
-        # 这意味着 原有stat 中 returns[t] 存储的是 T+1 的收益？或者 factor[t] 是 T+1 的因子？
-        # 通常回测框架：returns[t]是 T-1到T的收益。
-        # 因子分析：Factor[t] (闭市后) vs Returns[t+1] (T到T+1)
-        # 所以 Returns[t+1] 应该对齐到 Index t
+        # 1. 因子值截面排序（将因子值转换为百分位排名）
+        # 原有stat逻辑：position_rk = position.rank(axis=1, method="average", pct=True)
+        position_rk = factor.rank(axis=1, method="average", pct=True)
 
-        # 为避免歧义，这里采用最直接的方式：
-        # 我们假设传入的 daily_ret 索引 t 代表 t日的收益
-        # 我们需要计算 corr(Factor[t], Return[t+1])
-        # 所以将 Return 向上移动 1位 (shift(-1))
+        # 2. 对齐收益率时间序列，严格按照原始逻辑处理delay参数
+        # 原有stat关键逻辑: stock_return = self.trd_adjreturns.shift(self.delay - 1)
+        # 这里需要特别注意：
+        # - delay=0时，shift(-1)，使用t+1日收益（正常的预测逻辑）
+        # - delay=1时，shift(0)，使用t日收益（可能因为数据时间戳定义特殊）
+        stock_return = returns.shift(self.delay - 1)
 
-        ret_aligned = returns.shift(-1)  # 默认 T+1 IC
+        # 3. 对齐索引维度（提升后续筛选操作效率）
+        # 原有stat：确保因子和收益率的索引和列完全对齐
+        stock_return = stock_return.reindex(
+            index=position_rk.index, columns=position_rk.columns
+        )
 
-        # 仅保留因子非空的位置
-        valid_mask = factor.notna() & ret_aligned.notna()
+        # 4. 仅保留仓位非空位置的日度收益并进行排序
+        # 原有stat逻辑：这对多空仓位单边的IC计算至关重要
+        # 只对有因子值的股票计算收益率排名
+        return_rk = stock_return[position_rk.notna()].rank(
+            axis=1, method="average", pct=True
+        )
 
-        # 计算IC
-        ic = factor[valid_mask].corrwith(ret_aligned[valid_mask], axis=1, method=method)
+        # 5. 计算截面Pearson/Spearman相关系数
+        # 原有stat：ic = position_rk.corrwith(return_rk, axis=1)
+        ic = position_rk.corrwith(return_rk, axis=1, method=method)
+
         return ic
 
-    def execute(
+    def calculate_portfolio_returns(
         self,
         target_weights: pd.DataFrame,
         daily_ret: pd.DataFrame,
-        trade_ret: pd.DataFrame,
+        trade_ret: pd.DataFrame = None,
         limit_status: Optional[pd.DataFrame] = None,
         suspend_status: Optional[pd.DataFrame] = None,
         return_detail: bool = False,
+        position_type: int = 1,  # 1: 多头, -1: 空头
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict]]:
         """
         执行向量化回测
+        完全复刻原始 factor_test.py 的 pnl_calc 方法逻辑
 
-        :param target_weights: 目标持仓权重
+        :param target_weights: 目标持仓权重/因子值
         :type target_weights: pd.DataFrame
-        :param daily_ret: 日收益率
+        :param daily_ret: 日收益率 (复权结算价收益率)
         :type daily_ret: pd.DataFrame
-        :param trade_ret: 交易收益率 (用于计算交易期间的差异或损耗)
+        :param trade_ret: 交易收益率差异 (可选), 默认为 None
         :type trade_ret: pd.DataFrame
         :param limit_status: 涨跌停状态 (1: 涨停, -1: 跌停, 0: 正常), 默认为 None
         :type limit_status: Optional[pd.DataFrame]
         :param suspend_status: 停牌状态 (1: 停牌, 0: 正常), 默认为 None
         :type suspend_status: Optional[pd.DataFrame]
-        :param return_detail: 是否返回详细收益 (PNL) 信息序列, 默认为 False
+        :param return_detail: 是否返回详细 PNL 信息, 默认为 False
         :type return_detail: bool
+        :param position_type: 仓位类型 (1: 多头, -1: 空头), 默认为 1
+        :type position_type: int
         :return: 回测结果 DataFrame, 或 (pnl_df, pnl_detail) 元组
         :rtype: Union[pd.DataFrame, Tuple[pd.DataFrame, Dict]]
         """
-        # 复刻 原有stat pnl_calc 的核心逻辑
 
-        # 1. 基础处理
+        # ========================================
+        # 完全复刻原始 factor_test.py pnl_calc 的核心逻辑
+        # ========================================
+
+        # 1. 基础数据处理（原有stat第479-505行）
+        # 注意：在原始 factor_test.py 中，delay 在主流程 calc() 中处理：
+        # position = position.shift(delay) (第898行)
+        # 这意味着 pnl_calc 接收的 position 已经是 delay 偏移后的
         position = target_weights.copy()
 
-        # 处理 Delay (Factor[t] -> Position[t+delay])
+        # 为了保持与原始逻辑一致，我们在这里也对 position 做 delay 处理
         if self.delay != 0:
             position = position.shift(self.delay)
 
-        position_adj_num = 0.000001
-
-        # 空值填充
-        position.fillna(0, inplace=True)
-
-        # 2. 市值归一化处理 (资金分配规模)
-        position_sum = position.abs().sum(axis=1) + position_adj_num
+        position_adj_num = 0.000001  # 防止除零的调整值
+        position_sum = position.abs().sum(axis=1) + position_adj_num  # 因子值绝对值累加
         daily_value = position_sum
 
+        # 2. 市值归一化处理（原有stat第501-509行）
         if self.booksize > 0:
-            # 归一化到目标市值
+            # 固定市值模式：每日市值标准化到booksize
             book_unit = position_sum.rtruediv(self.booksize)
-            position = position.multiply(book_unit, axis="index")
+            position_factor = position.multiply(book_unit, axis="index")
             daily_value = pd.Series(self.booksize, index=position.index)
-
-        position_sum_before_filter = position.abs().sum(axis=1)
-
-        # 3. 交易限制过滤逻辑 (涨跌停/停牌)
-        # 过滤涨跌停
-        if self.filter_limit and limit_status is not None:
-            # limit_status: 1=涨停, -1=跌停
-            # position_change > 0 (加仓) & limit=1 (涨停) -> 禁止买入涨停
-            # position_change < 0 (减仓) & limit=-1 (跌停) -> 禁止卖出跌停
-
-            # 为了计算 change，我们需要 pre_position
-            # 但这里是一次性计算，position 是目标仓位
-            # 原有stat 逻辑：position_change = position.diff()
-            # 这是一个近似，因为实际仓位可能受以前的过滤影响
-            # 在向量化中，很难做到完全的路径依赖过滤，除非循环
-            # 原有stat 的做法是先 diff，然后 mask，然后 scale
-
-            curr_pos_diff = position.diff().fillna(0)
-
-            # 若 limit_status 对齐
-            status = limit_status.reindex(
-                index=position.index, columns=position.columns
-            ).fillna(0)
-
-            # 假设 position 正值代表多头
-            # 如果做多(Pos>0):
-            #   加仓(Diff>0) 且 涨停(Status=1) -> 禁止
-            #   减仓(Diff<0) 且 跌停(Status=-1) -> 禁止
-
-            # 多头视角
-            cant_buy = (curr_pos_diff > 0) & (status == 1)
-            cant_sell = (curr_pos_diff < 0) & (status == -1)
-
-            # 空头视角 (Pos<0)
-            #   加仓(变更多空/Diff<0) 且 ... 逻辑比较复杂，原有stat主要处理多头或简单逻辑
-            #   原有stat: up_limit = status == 1 * sign; down_limit = status == -1 * sign
-            #   这里简化处理，假设 status 1 表示 价格涨停，-1 表示 价格跌停
-            #   无论多空：
-            #     不能以涨停价买入 (Buy: Pos增加) -> Diff > 0 & Status == 1
-            #     不能以跌停价卖出 (Sell: Pos减少) -> Diff < 0 & Status == -1
-
-            mask = cant_buy | cant_sell
-            position[mask] = np.nan  # 标记为无效，稍后处理
-
-        # 过滤停牌
-        if self.filter_suspend and suspend_status is not None:
-            status = suspend_status.reindex(
-                index=position.index, columns=position.columns
-            ).fillna(0)
-            # 1 表示停牌
-            position[status == 1] = np.nan
-
-        # 4. 仓位无效值回填与资本杠杆缩放 (Scaling)
-        # 原有stat: ffill nan, then fillna(0)
-        position.ffill(inplace=True)
-        position.fillna(0, inplace=True)
-
-        position_sum_after_filter = position.abs().sum(axis=1) + position_adj_num
-        scale_final = position_sum_before_filter.div(position_sum_after_filter)
-        position = position.mul(scale_final, axis=0)
-
-        # 5. 回测收益指标计算 (PnL 计算)
-        daily_count = (position != 0).sum(axis=1)
-
-        # 持仓收益 (Ins Pnl): T-1 持仓 * T日收益
-        last_position = position.shift(1).fillna(0)
-        daily_ins_pnl = last_position.multiply(daily_ret)
-
-        # 交易执行产生的收益计算 (Trading)
-        # 计算需要交易的金额
-        if self.booksize > 0:
-            daily_ins_trd = position.diff()
         else:
-            # 考虑自然增长后的漂移
-            # T-1市值 * (1+ret) = 交易前市值
-            # 目标市值 - 交易前市值 = 需交易金额
-            daily_ins_trd = position.sub(
-                last_position.multiply(1 + daily_ret.shift(1).fillna(0))
+            # 因子值直接代表市值（非固定市值模式）
+            position_factor = position.copy()
+            daily_value = position_sum
+
+        position_sum_before_filter = position_factor.abs().sum(axis=1)  # 过滤前的总仓位
+
+        # ========================================
+        # 开始过滤逻辑（原有stat第511-574行）
+        # ========================================
+
+        position_factor.fillna(0, inplace=True)  # 调用本方法前在过滤多空仓位时会留下nan
+
+        # 3. 过滤涨跌停（原有stat第516-542行）
+        if self.filter_limit and limit_status is not None:
+            # 对齐涨跌停状态数据
+            up_down_limit_status = limit_status.reindex(
+                index=position_factor.index, columns=position_factor.columns
+            ).fillna(0)
+
+            # 按日期分组前向填充，确保日内一致性原有stat逻辑）
+            up_down_limit_status = (
+                up_down_limit_status.sort_index()
+                .groupby(up_down_limit_status.index.date)
+                .ffill()
             )
 
-        daily_ins_trd.iloc[0] = position.iloc[0]  # 首日全额买入
+            # 涨跌停方向判断（原有stat逻辑）
+            up_limit = up_down_limit_status == 1 * position_type  # 同向涨停
+            down_limit = up_down_limit_status == -1 * position_type  # 同向跌停
 
-        # 交易收益损耗 (Trd Pnl): -1 * 交易执行额 * 交易期间滑点差异(trade_ret)
-        # trade_ret 通常定义为 (成交均价 - 收盘价) / 收盘价
-        # 原有stat: daily_trd_pnl = -daily_ins_trd * trd_daily_adjreturns
-        daily_trd_pnl = -daily_ins_trd.multiply(trade_ret)
+            # 仓位变化计算（原有stat逻辑）
+            position_change = position_factor.abs().diff()
+            position_up = position_change > 0  # 加仓
+            position_down = position_change < 0  # 减仓
 
-        # 总收益
+            # 应用过滤规则：涨停不能同向加仓，跌停不能逆向减仓
+            filter_mask = (position_up & up_limit) | (position_down & down_limit)
+            position_factor[filter_mask] = np.nan
+
+        # 4. 过滤停牌（原有stat第545-554行）
+        if self.filter_suspend and suspend_status is not None:
+            # 对齐停牌状态数据
+            suspension_status = suspend_status.reindex(
+                index=position_factor.index, columns=position_factor.columns
+            ).fillna(0)
+
+            # 按日期分组前向填充（原有stat逻辑）
+            suspension_status = (
+                suspension_status.sort_index()
+                .groupby(suspension_status.index.date)
+                .ffill()
+            )
+
+            # 停牌股票不能交易
+            _filter = suspension_status == 1
+            position_factor[_filter] = np.nan
+
+        # 5. 仓位回填与重平衡（原有stat第556-574行）
+        position_factor.ffill(inplace=True)  # NaN 股票保持前值
+        position_factor.fillna(0, inplace=True)  # 前值均为 NaN 时用 0 填充
+
+        position_sum_after_filter = position_factor.abs().sum(axis=1) + position_adj_num
+        scale_final = position_sum_before_filter.div(
+            position_sum_after_filter
+        )  # 过滤前后仓位的比值
+        position_factor = position_factor.mul(scale_final, axis=0)  # 重新缩放仓位
+
+        # ========================================
+        # 结束过滤逻辑
+        # ========================================
+
+        # 6. PNL 计算（原有stat第576-674行）
+        daily_count = (position_factor != 0).sum(axis=1)  # 每日持仓个数
+        last_position = position_factor.shift().fillna(
+            0
+        )  # 因子值向后偏移1位，使t-1日因子值与t日对齐
+
+        # 持仓部分PNL：持仓市值相比前一日变化值
+        daily_ins_pnl = last_position.multiply(daily_ret)
+
+        # 交易部分计算（原有stat第582-614行）
+        if self.booksize > 0:
+            # 因子值不表示仓位的情况（原有stat优化算法1）
+            daily_ins_trd = position_factor.diff()
+        else:
+            # 因子值表示仓位的情况（原有stat优化算法2）
+            # 为保证无需交易的股票不产生收益，在做diff时将前一天仓位乘以前一天收益率
+            daily_ins_trd = position_factor.sub(
+                last_position.multiply(1 + daily_ret.shift().fillna(0))
+            )
+
+        # 修正起始日的日内交易额为持仓总额（原有stat逻辑）
+        daily_ins_trd.iloc[0] = position_factor.iloc[0]
+
+        # 交易部分PNL（原有stat第617-625行）
+        if trade_ret is not None:
+            # 交易部分的t日变化值（原有stat注释逻辑）
+            daily_trd_pnl = -daily_ins_trd.multiply(trade_ret)
+        else:
+            # 如果没有提供交易收益率，则交易PNL为0
+            daily_trd_pnl = pd.DataFrame(
+                0, index=daily_ins_trd.index, columns=daily_ins_trd.columns
+            )
+
+        # 总PNL为持有部分pnl和交易部分pnl相加（原有stat第627-630行）
         daily_total_pnl = daily_ins_pnl.fillna(0) + daily_trd_pnl.fillna(0)
 
-        # 聚合
-        s_pnl = daily_total_pnl.sum(axis=1)
-        s_trd = daily_ins_trd.abs().sum(axis=1)
-        s_val = daily_value
+        # 每日收益累加（原有stat第632行）
+        daily_pnl = daily_total_pnl[daily_total_pnl.abs() > 0].sum(axis=1, min_count=1)
 
-        # 换手率
-        # last_daily_value
-        last_val = s_val.shift(1).replace(0, np.nan).bfill()
-        s_tvr = s_trd.div(last_val)
+        # 每日交易值累加（原有stat第635行）
+        daily_trd = daily_ins_trd.abs().sum(axis=1)
 
-        # 收益率 (扣费前)
-        s_rawret = s_pnl.div(last_val)
+        # 每日换手率计算（原有stat第637-642行）
+        # 分母使用前一天总市值，如前一天市值为0，则使用当天市值
+        last_daily_value = (
+            daily_value.shift()
+            .replace(position_adj_num, np.nan)
+            .fillna(method="bfill", limit=1)
+        )
+        daily_tvr = daily_trd.truediv(last_daily_value)
 
-        # 扣费
+        # 每日原始回报率计算（原有stat第644行）
+        daily_rawret = daily_pnl.truediv(last_daily_value)
+
+        # 回报扣减手续费（原有stat第646-649行）
         if self.cost > 0:
-            # 费用 = 交易额 * rate
-            cost_val = s_trd * self.cost
-            s_ret = (s_pnl - cost_val).div(last_val)
+            daily_returns = (daily_pnl - daily_trd * self.cost).truediv(
+                last_daily_value
+            )
         else:
-            s_ret = s_rawret
+            daily_returns = daily_rawret
 
-        # 结果汇总
+        # 7. 记录各项指标（原有stat第660-673行）
+        # 为避免nan对后续聚合计算结果造成影响，此处统一fillna(0)
         pnl_df = pd.DataFrame(
             {
-                "ret": s_ret.fillna(0),
-                "rawret": s_rawret.fillna(0),
-                "trd": s_trd.fillna(0),
-                "tvr": s_tvr.fillna(0),
-                "value": s_val.fillna(0),
+                "ret": daily_returns.fillna(0),
+                "trd": daily_trd.fillna(0),
+                "tvr": daily_tvr.fillna(0),
+                "value": daily_value.fillna(0),
+                "rawret": daily_rawret.fillna(0),
                 "count": daily_count.fillna(0),
-                "pnl": s_pnl.fillna(0),
-                "ins_pnl": daily_ins_pnl.sum(axis=1).fillna(0),
-                "trd_pnl": daily_trd_pnl.sum(axis=1).fillna(0),
+                "pnl": daily_pnl.fillna(0),
+                "trd_pnl": daily_trd_pnl.fillna(0).sum(axis=1),
+                "ins_pnl": daily_ins_pnl.fillna(0).sum(axis=1),
             }
         )
 
@@ -459,11 +635,13 @@ class VectorExecutor:
             "daily_trd_pnl": daily_trd_pnl,
             "daily_total_pnl": daily_total_pnl,
             "daily_ins_trd": daily_ins_trd,
+            "position_factor": position_factor,  # 返回最终仓位用于调试
         }
 
         if return_detail:
             return pnl_df, pnl_detail
         return pnl_df
+        # 该部分已经在上面的替换中完成了
 
 
 # ==========================================
@@ -562,29 +740,63 @@ class PerformanceMetrics:
         return perf
 
     def _calc_max_dd(self, ser: pd.Series):
-        """计算最大回撤及起止时间"""
-        if len(ser) == 0:
-            return 0.0, None, None
+        """
+        计算最大回撤及起止时间
+        完全对齐原始 factor_test.py 的 max_dd 方法逻辑
 
-        cum = (1 + ser).cumprod()
-        max_cum = cum.expanding().max()
-        dd = (cum / max_cum) - 1
+        :param ser: 收益率时间序列
+        :type ser: pd.Series
+        :return: [最大回撤绝对值, 开始时间, 结束时间]
+        :rtype: List
+        """
 
-        max_dd = dd.min()
-        end_idx = dd.idxmin()
+        # ========================================
+        # 复刻原始 factor_test.py 的 max_dd 方法逻辑
+        # ========================================
 
-        # 寻找 start_idx: end_idx 之前的最高点
-        # 截取到 end_idx
-        sub_max_cum = max_cum[:end_idx]
-        if len(sub_max_cum) == 0:
-            start_idx = end_idx
+        # 初始化默认返回信息（原有stat逻辑）
+        max_dd_info = [
+            0,
+            ser.index[0] if len(ser) > 0 else None,
+            ser.index[-1] if len(ser) > 0 else None,
+        ]
+
+        # 检查数据有效性（原有stat逻辑）
+        if len(ser) == 0 or ser[ser != 0].count() == 0:
+            return max_dd_info
+
+        # 如果一天交易多次，因暂时没有获取准确分时benchmark行情的方式，只能在天维度聚合后再统计
+        # 计算累计收益序列 (1 + ret).cumprod()
+        cum_ret = (1 + ser).cumprod()
+
+        # 计算滚动最大值 expanding().max()
+        rolling_max = cum_ret.expanding().max()
+
+        # 计算回撤序列 (cum_ret / rolling_max) - 1
+        drawdown = cum_ret / rolling_max - 1
+
+        # 找到最大回撤（最小值）
+        max_dd = drawdown.min()
+
+        if pd.isna(max_dd) or max_dd >= 0:
+            return max_dd_info
+
+        # 找到最大回撤结束时间（最低点）
+        max_dd_end = drawdown.idxmin()
+
+        # 找到最大回撤开始时间（最低点之前的最高点）
+        # 在最低点之前找最后一次达到peak的时间
+        peak_value = rolling_max.loc[max_dd_end]
+        mask_before_end = cum_ret.index <= max_dd_end
+        candidates = cum_ret[mask_before_end]
+        peak_indices = candidates[candidates == peak_value]
+
+        if len(peak_indices) > 0:
+            max_dd_start = peak_indices.index[-1]  # 最后一次达到peak的时间
         else:
-            # 最高点的值
-            peak_val = max_cum[end_idx]
-            # 找到第一个达到这个peak的日期
-            start_idx = sub_max_cum[sub_max_cum == peak_val].index[0]
+            max_dd_start = ser.index[0]
 
-        return abs(max_dd), start_idx, end_idx
+        return [abs(max_dd), max_dd_start, max_dd_end]
 
     def generate_report(self, perf: pd.DataFrame, title: str = "Performance Report"):
         """
@@ -644,9 +856,7 @@ class PerformanceMetrics:
         if "Tvr(%)" in report_df.columns:
             report_df["Tvr(%)"] = report_df["Tvr(%)"].round(2)
         report_df["Win(%)"] = report_df["Win(%)"].round(1)
-
-        # Call standalone pretty print function
-        pretty_table_print(report_df, title=title)
+        return report_df
 
 
 # ==========================================
@@ -677,6 +887,16 @@ class FactorAnalyzer:
     :param limit_status: 涨跌停状态数据 (可选), 默认为 None
     :param suspend_status: 停牌状态数据 (可选), 默认为 None
     """
+
+    def _ensure_tz_naive(self, df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        """确保 DataFrame 的 DatetimeIndex 是无时区的 (tz-naive)"""
+        if (
+            df is not None
+            and isinstance(df.index, pd.DatetimeIndex)
+            and df.index.tz is not None
+        ):
+            return df.copy().set_index(df.index.tz_localize(None))
+        return df
 
     def __init__(
         self,
@@ -718,13 +938,23 @@ class FactorAnalyzer:
         self.metrics = PerformanceMetrics(periods_per_year=periods_per_year)
         self.ls_balance = ls_balance
 
-        # Remove timezone info if present to avoid warnings
-        if (
-            factor is not None
-            and isinstance(factor.index, pd.DatetimeIndex)
-            and factor.index.tz is not None
-        ):
-            factor.index = factor.index.tz_localize(None)
+        # Data Sanitization: 确保所有输入数据的索引无时区，以保证对齐
+        factor = self._ensure_tz_naive(factor)
+        daily_ret = self._ensure_tz_naive(daily_ret)
+        trade_ret = self._ensure_tz_naive(trade_ret)
+        settle_price = self._ensure_tz_naive(settle_price)
+        trd_settle_price = self._ensure_tz_naive(trd_settle_price)
+        adj_factor = self._ensure_tz_naive(adj_factor)
+        limit_status = self._ensure_tz_naive(limit_status)
+        suspend_status = self._ensure_tz_naive(suspend_status)
+
+        # 检查 factor 索引类型，防止传入了转置的数据 (Stock as Index)
+        if factor is not None and not isinstance(factor.index, pd.DatetimeIndex):
+            logger.warning(
+                "Warning: Factor index is NOT DatetimeIndex. "
+                "FactorAnalyzer Expects (Date x Stock) shape with DatetimeIndex. "
+                "Please check if your factor DataFrame is transposed (e.g. use .unstack(level='instrument') if MultiIndex)."
+            )
 
         self.factor = factor
         self.daily_ret = daily_ret
@@ -737,12 +967,15 @@ class FactorAnalyzer:
         self._compute_returns_if_needed(settle_price, trd_settle_price, adj_factor)
 
     def _compute_returns_if_needed(self, settle_price, trd_settle_price, adj_factor):
-        """如果提供了价格数据，自动计算收益率"""
+        """
+        如果提供了价格数据，自动计算收益率
+        完全对齐原始 factor_test.py 的数据处理逻辑
+        """
         if settle_price is not None and adj_factor is not None:
-            # 1. 计算复权结算价
+            # 1. 计算复权结算价（原有stat: adjsettle = settle_price * adjfactor）
             adj_settle = settle_price * adj_factor
 
-            # 2. 计算日收益率 (Close-to-Close)
+            # 2. 计算日收益率 (Close-to-Close)（原有stat: daily_adjreturns = adjsettle.pct_change()）
             if self.daily_ret is None:
                 self.daily_ret = adj_settle.pct_change()
 
@@ -755,12 +988,15 @@ class FactorAnalyzer:
                 if self.trade_ret is None:
                     self.trade_ret = (adj_trd / adj_settle) - 1
 
-                # 计算用于IC的收益率 (Trade-to-Trade)
+                # 计算用于IC的收益率 (Trade-to-Trade) - 这里保持与原始stat一致
                 # 原有stat: trd_adjreturns = trd_adjsettle.pct_change()
-                if self.ic_ret is None:
-                    self.ic_ret = adj_trd.pct_change()
+                # IC计算使用这个收益率
+                self.ic_ret = adj_trd.pct_change()
+            else:
+                # 没有交易价时，IC使用日收益率
+                self.ic_ret = self.daily_ret
 
-        # Fallback
+        # Fallback: 如果没有提供IC专用收益率，使用日收益率
         if self.ic_ret is None and self.daily_ret is not None:
             self.ic_ret = self.daily_ret
 
@@ -796,6 +1032,16 @@ class FactorAnalyzer:
         :return: (PNL DataFrame, PNL Detail Dict, Performance DataFrame)
         :rtype: Tuple[pd.DataFrame, Dict, pd.DataFrame]
         """
+        # Ensure Inputs are naive
+        factor = self._ensure_tz_naive(factor)
+        daily_ret = self._ensure_tz_naive(daily_ret)
+        trade_ret = self._ensure_tz_naive(trade_ret)
+        limit_status = self._ensure_tz_naive(limit_status)
+        suspend_status = self._ensure_tz_naive(suspend_status)
+        settle_price = self._ensure_tz_naive(settle_price)
+        trd_settle_price = self._ensure_tz_naive(trd_settle_price)
+        adj_factor = self._ensure_tz_naive(adj_factor)
+
         # Data resolution (args > self > error)
         factor = factor if factor is not None else self.factor
         ls_balance = ls_balance if ls_balance is not None else self.ls_balance
@@ -828,16 +1074,31 @@ class FactorAnalyzer:
             # logger.warning("未提供 trade_ret 参数，回测将假设交易价格为当日收盘价（0 滑点）。")
             pass
 
-        # 0. 多空平衡 (LS Balance)
+        # 0. 处理delay参数 - 按原始 factor_test.py 的逻辑
+        # 原有stat在主流程中对position做了delay偏移：position = position.shift(delay)
+        # 这里我们在VectorExecutor中已经处理了，但要确保与原始逻辑一致
+        if self.executor.delay != 0:
+            # delay已经在VectorExecutor.execute中处理，这里不需要额外处理
+            pass
+
+        # 1. 多空平衡 (LS Balance)
         if ls_balance:
             # 减去截面中位数，使因子以0为中心
             factor = factor.sub(factor.median(axis=1), axis=0)
 
-        # 1. 计算IC (使用 ic_ret)
-        ic = self.executor.calc_ic(factor, local_ic_ret)
+        # 1. 计算IC (使用专门的 ic_ret)
+        # 确保使用正确的收益率数据进行IC计算：
+        # - 如果有交易价格数据，使用交易价收益率 (trd_adjreturns)
+        # - 否则使用日收益率 (daily_adjreturns)
+        ic_ret_for_calc = (
+            local_ic_ret
+            if hasattr(self, "ic_ret") and self.ic_ret is not None
+            else local_daily_ret
+        )
+        ic = self.executor.calculate_information_coefficient(factor, ic_ret_for_calc)
 
         # 2. 回测 (将因子直接视为权重，内部会归一化)
-        pnl_df, pnl_detail = self.executor.execute(
+        pnl_df, pnl_detail = self.executor.calculate_portfolio_returns(
             target_weights=factor,
             daily_ret=local_daily_ret,
             trade_ret=local_trade_ret,
@@ -863,7 +1124,6 @@ class FactorAnalyzer:
         trade_ret: Optional[pd.DataFrame] = None,
         limit_status: Optional[pd.DataFrame] = None,
         suspend_status: Optional[pd.DataFrame] = None,
-        report_type: str = "yearly",
     ) -> Dict[str, pd.DataFrame]:
         """
         计算分层回测 (Quantile Analysis)
@@ -873,7 +1133,6 @@ class FactorAnalyzer:
         :param trade_ret: 交易收益率数据 (覆盖初始化参数), 默认为 None
         :param limit_status: 涨跌停状态 (覆盖初始化参数), 默认为 None
         :param suspend_status: 停牌状态 (覆盖初始化参数), 默认为 None
-        :param report_type: (当前保留参数) 保留接口兼容性, 默认为 "yearly"
         :return: 分层回测结果映射字典 {group_id: pnl_df}，包含多空对冲组合 "LS"
         :rtype: Dict[str, pd.DataFrame]
         """
@@ -886,9 +1145,9 @@ class FactorAnalyzer:
             suspend_status if suspend_status is not None else self.suspend_status
         )
 
-        if factor is None or daily_ret is None or trade_ret is None:
+        if factor is None or daily_ret is None:
             raise ValueError(
-                "缺少必需数据。请在初始化或方法调用时提供因数据和收益数据。"
+                "缺少必需数据。请在初始化或方法调用时提供因子数据和收益数据。"
             )
         portfolios = self.grouper.get_quantile_groups(factor)
         results = {}
@@ -897,7 +1156,7 @@ class FactorAnalyzer:
 
         for gid, weights in portfolios.items():
             # 回测每一层
-            pnl_df = self.executor.execute(
+            pnl_df = self.executor.calculate_portfolio_returns(
                 target_weights=weights,
                 daily_ret=daily_ret,
                 trade_ret=trade_ret,
@@ -915,7 +1174,7 @@ class FactorAnalyzer:
         btm_g = self.grouper.n_groups
 
         ls_w = portfolios[top_g] - portfolios[btm_g]
-        ls_pnl = self.executor.execute(
+        ls_pnl = self.executor.calculate_portfolio_returns(
             target_weights=ls_w,
             daily_ret=daily_ret,
             trade_ret=trade_ret,
@@ -955,7 +1214,9 @@ class FactorAnalyzer:
             result_df, ic, benchmark_ret, report_type
         )
 
-    def generate_report(self, perf: pd.DataFrame, title: str = "Performance Report"):
+    def generate_report(
+        self, perf: pd.DataFrame, title: str = "Performance Report", use_df: bool = True
+    ):
         """
         生成格式化的文本控制台报告 (兼容性包装层)
 
@@ -964,4 +1225,253 @@ class FactorAnalyzer:
         :param title: 报告标题, defaults to "Performance Report"
         :type title: str
         """
-        self.metrics.generate_report(perf, title)
+        report = self.metrics.generate_report(perf=perf, title=title)
+        # Call standalone pretty print function
+        pretty_table_print(report, title=title)
+
+
+# ==========================================
+# 6. 主入口函数和数据接口适配层 (Data Interface Adapter Layer)
+# ==========================================
+
+
+def create_factor_analyzer_from_dataframes(
+    factor_df: pd.DataFrame,
+    settle_df: pd.DataFrame,
+    adjfactor_df: pd.DataFrame,
+    trd_settle_df: Optional[pd.DataFrame] = None,
+    tradestatuscode_df: Optional[pd.DataFrame] = None,
+    up_down_limit_status_df: Optional[pd.DataFrame] = None,
+    # 分析参数
+    n_groups: int = 5,
+    ascending: bool = False,
+    booksize: float = 1000000.0,
+    cost: float = 0.0,
+    filter_limit: bool = False,
+    filter_suspend: bool = False,
+    delay: int = 0,
+    ls_balance: bool = False,
+    periods_per_year: int = 250,
+) -> FactorAnalyzer:
+    """
+    从标准DataFrame创建FactorAnalyzer实例
+    完全解耦数据获取依赖，只接受标准格式的DataFrame输入
+
+    :param factor_df: 因子值DataFrame (index=date, columns=stock_code)
+    :type factor_df: pd.DataFrame
+    :param settle_df: 结算价DataFrame (index=date, columns=stock_code)
+    :type settle_df: pd.DataFrame
+    :param adjfactor_df: 复权因子DataFrame (index=date, columns=stock_code)
+    :type adjfactor_df: pd.DataFrame
+    :param trd_settle_df: 交易参考价DataFrame (可选, index=date, columns=stock_code), 默认为 None
+    :type trd_settle_df: Optional[pd.DataFrame]
+    :param tradestatuscode_df: 交易状态DataFrame (可选, 1=停牌, 0=正常), 默认为 None
+    :type tradestatuscode_df: Optional[pd.DataFrame]
+    :param up_down_limit_status_df: 涨跌停状态DataFrame (可选, 1=涨停, -1=跌停, 0=正常), 默认为 None
+    :type up_down_limit_status_df: Optional[pd.DataFrame]
+    :param n_groups: 分层数量, 默认为 5
+    :type n_groups: int
+    :param ascending: 分层排序方向 (False: 因子大值为Group1), 默认为 False
+    :type ascending: bool
+    :param booksize: 目标市值, 默认为 1000000.0
+    :type booksize: float
+    :param cost: 交易成本率, 默认为 0.0
+    :type cost: float
+    :param filter_limit: 是否过滤涨跌停, 默认为 False
+    :type filter_limit: bool
+    :param filter_suspend: 是否过滤停牌, 默认为 False
+    :type filter_suspend: bool
+    :param delay: 因子生效延迟天数, 默认为 0
+    :type delay: int
+    :param ls_balance: 是否多空平衡, 默认为 False
+    :type ls_balance: bool
+    :param periods_per_year: 年化交易天数, 默认为 250
+    :type periods_per_year: int
+    :return: 配置好的FactorAnalyzer实例
+    :rtype: FactorAnalyzer
+    :raises TypeError: 当输入参数类型不正确时
+    """
+
+    # ========================================
+    # 数据格式验证和预处理
+    # ========================================
+
+    # 1. 基本数据格式验证
+    for name, df in [
+        ("factor_df", factor_df),
+        ("settle_df", settle_df),
+        ("adjfactor_df", adjfactor_df),
+    ]:
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(f"{name} must be a pandas DataFrame")
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise TypeError(
+                f"{name} index must be DatetimeIndex. Please check if your input is transposed (Stocks as Index)."
+            )
+
+    # helper to ensure naive
+    def ensure_naive(df):
+        if (
+            df is not None
+            and isinstance(df.index, pd.DatetimeIndex)
+            and df.index.tz is not None
+        ):
+            return df.copy().set_index(df.index.tz_localize(None))
+        return df
+
+    factor_df = ensure_naive(factor_df)
+    settle_df = ensure_naive(settle_df)
+    adjfactor_df = ensure_naive(adjfactor_df)
+    trd_settle_df = ensure_naive(trd_settle_df)
+    tradestatuscode_df = ensure_naive(tradestatuscode_df)
+    up_down_limit_status_df = ensure_naive(up_down_limit_status_df)
+
+    # 2. 计算复权收盘价和收益率（对应原有stat的adjsettle和daily_adjreturns）
+    adj_settle = settle_df * adjfactor_df
+    daily_ret = adj_settle.pct_change()
+
+    # 3. 处理交易价格和交易收益差异（对应原有stat的trd_adjsettle和trd_daily_adjreturns）
+    trade_ret = None
+    ic_ret = daily_ret  # IC计算用的收益率
+    if trd_settle_df is not None:
+        adj_trd_settle = trd_settle_df * adjfactor_df
+        # 交易差异收益率：原有stat逻辑 trd_daily_adjreturns = trd_adjsettle.div(adjsettle) - 1
+        trade_ret = (adj_trd_settle / adj_settle) - 1
+        # IC计算使用交易价收益率：原有stat逻辑 trd_adjreturns = trd_adjsettle.pct_change()
+        ic_ret = adj_trd_settle.pct_change()
+
+    # 4. 处理停牌状态数据（对应原有stat的suspension_status）
+    suspend_status = None
+    if filter_suspend and tradestatuscode_df is not None:
+        # 原有stat逻辑：1表示停牌，0表示正常交易
+        suspend_status = tradestatuscode_df
+
+    # 5. 处理涨跌停状态数据（对应原有stat的up_down_limit_status）
+    limit_status = None
+    if filter_limit and up_down_limit_status_df is not None:
+        # 原有stat逻辑：1=涨停, -1=跌停, 0=正常
+        limit_status = up_down_limit_status_df
+
+    # ========================================
+    # 创建分析器实例
+    # ========================================
+
+    analyzer = FactorAnalyzer(
+        n_groups=n_groups,
+        ascending=ascending,
+        booksize=booksize,
+        cost=cost,
+        filter_limit=filter_limit,
+        filter_suspend=filter_suspend,
+        delay=delay,
+        ls_balance=ls_balance,
+        periods_per_year=periods_per_year,
+        # 数据参数
+        factor=factor_df,
+        daily_ret=daily_ret,
+        trade_ret=trade_ret,
+        limit_status=limit_status,
+        suspend_status=suspend_status,
+    )
+
+    # 设置IC计算专用收益率
+    analyzer.ic_ret = ic_ret
+
+    return analyzer
+
+
+def run_factor_analysis(
+    factor_df: pd.DataFrame,
+    settle_df: pd.DataFrame,
+    adjfactor_df: pd.DataFrame,
+    trd_settle_df: Optional[pd.DataFrame] = None,
+    tradestatuscode_df: Optional[pd.DataFrame] = None,
+    up_down_limit_status_df: Optional[pd.DataFrame] = None,
+    # 分析参数
+    analysis_type: str = "full",  # "full" 或 "quantile"
+    n_groups: int = 5,
+    ascending: bool = False,
+    booksize: float = 1000000.0,
+    cost: float = 0.0,
+    filter_limit: bool = False,
+    filter_suspend: bool = False,
+    delay: int = 0,
+    ls_balance: bool = False,
+    report_type: str = "yearly",
+    verbose: bool = True,
+    periods_per_year: int = 250,
+) -> Union[Tuple[pd.DataFrame, Dict, pd.DataFrame], Dict[str, pd.DataFrame]]:
+    """
+    一键运行因子分析
+    完全替代原有Stats类，提供相同的分析能力但使用DataFrame输入
+
+    :param factor_df: 因子值DataFrame
+    :type factor_df: pd.DataFrame
+    :param settle_df: 结算价DataFrame
+    :type settle_df: pd.DataFrame
+    :param adjfactor_df: 复权因子DataFrame
+    :type adjfactor_df: pd.DataFrame
+    :param trd_settle_df: 交易参考价DataFrame (可选), 默认为 None
+    :type trd_settle_df: Optional[pd.DataFrame]
+    :param tradestatuscode_df: 交易状态DataFrame (可选), 默认为 None
+    :type tradestatuscode_df: Optional[pd.DataFrame]
+    :param up_down_limit_status_df: 涨跌停状态DataFrame (可选), 默认为 None
+    :type up_down_limit_status_df: Optional[pd.DataFrame]
+    :param analysis_type: 分析类型 ("full"=整体分析, "quantile"=分层分析), 默认为 "full"
+    :type analysis_type: str
+    :param n_groups: 分层数量, 默认为 5
+    :type n_groups: int
+    :param ascending: 分层排序方向, 默认为 False
+    :type ascending: bool
+    :param booksize: 目标市值, 默认为 1000000.0
+    :type booksize: float
+    :param cost: 交易成本率, 默认为 0.0
+    :type cost: float
+    :param filter_limit: 是否过滤涨跌停, 默认为 False
+    :type filter_limit: bool
+    :param filter_suspend: 是否过滤停牌, 默认为 False
+    :type filter_suspend: bool
+    :param delay: 因子生效延迟天数, 默认为 0
+    :type delay: int
+    :param ls_balance: 是否多空平衡, 默认为 False
+    :type ls_balance: bool
+    :param report_type: 报告聚合周期, 默认为 "yearly"
+    :type report_type: str
+    :param verbose: 是否打印报告, 默认为 True
+    :type verbose: bool
+    :param periods_per_year: 年化交易天数, 默认为 250
+    :type periods_per_year: int
+    :return: 分析结果 (full: (pnl_df, pnl_detail, perf_df), quantile: {group_id: pnl_df})
+    :rtype: Union[Tuple[pd.DataFrame, Dict, pd.DataFrame], Dict[str, pd.DataFrame]]
+    :raises ValueError: 当analysis_type不支持时
+    """
+
+    # 创建分析器
+    analyzer = create_factor_analyzer_from_dataframes(
+        factor_df=factor_df,
+        settle_df=settle_df,
+        adjfactor_df=adjfactor_df,
+        trd_settle_df=trd_settle_df,
+        tradestatuscode_df=tradestatuscode_df,
+        up_down_limit_status_df=up_down_limit_status_df,
+        n_groups=n_groups,
+        ascending=ascending,
+        booksize=booksize,
+        cost=cost,
+        filter_limit=filter_limit,
+        filter_suspend=filter_suspend,
+        delay=delay,
+        ls_balance=ls_balance,
+        periods_per_year=periods_per_year,
+    )
+
+    if analysis_type == "full":
+        # 整体分析 - 对应原有 Stats.calc()
+        return analyzer.run_analysis(report_type=report_type, verbose=verbose)
+    elif analysis_type == "quantile":
+        # 分层分析 - 对应原有 Stats.calc_quantile()
+        return analyzer.calc_quantile()
+    else:
+        raise ValueError(
+            f"Unknown analysis_type: {analysis_type}. Must be 'full' or 'quantile'"
+        )

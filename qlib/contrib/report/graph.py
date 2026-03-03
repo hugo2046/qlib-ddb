@@ -25,15 +25,16 @@ from scipy.stats import gaussian_kde
 # 全局图表初始化配置
 # ============================================================================
 
+
 def get_default_init_opts(width: str = "100%", height: int = 400) -> opts.InitOpts:
     """获取默认的图表初始化配置
-    
+
     使用白色主题以确保在 Jupyter Notebook 中正确显示。
-    
+
     Args:
         width: 图表宽度，默认 "100%"
         height: 图表高度，默认 400
-        
+
     Returns:
         opts.InitOpts: pyecharts 初始化配置对象
     """
@@ -630,7 +631,7 @@ class ScatterGraph(BaseGraph):
         width = self._layout.get("width", "100%")
         height = self._layout.get("height", 400)
         self.chart = Line(init_opts=get_default_init_opts(width, height))
-        
+
         x_data = self._df.index.astype(str).tolist()
         self.chart.add_xaxis(x_data)
 
@@ -686,7 +687,7 @@ class BarGraph(BaseGraph):
         width = self._layout.get("width", "100%")
         height = self._layout.get("height", 400)
         self.chart = Bar(init_opts=get_default_init_opts(width, height))
-        
+
         x_data = self._df.index.astype(str).tolist()
 
         self.chart.add_xaxis(x_data)
@@ -1254,8 +1255,16 @@ class SubplotsGraph:
         # 使用统一的初始化配置（白色主题）
         self._grid = Grid(
             init_opts=get_default_init_opts(
-                width=canvas_width if isinstance(canvas_width, str) else f"{canvas_width}px",
-                height=int(canvas_height.replace("px", "")) if isinstance(canvas_height, str) and "px" in canvas_height else 1000
+                width=(
+                    canvas_width
+                    if isinstance(canvas_width, str)
+                    else f"{canvas_width}px"
+                ),
+                height=(
+                    int(canvas_height.replace("px", ""))
+                    if isinstance(canvas_height, str) and "px" in canvas_height
+                    else 1000
+                ),
             )
         )
 
@@ -1642,7 +1651,7 @@ class CalendarGraph(BaseGraph):
         import datetime
 
         if self._df is None or self._df.empty:
-            self.chart = Calendar()
+            self.chart = Calendar(init_opts=get_default_init_opts())
             return
 
         # 1. 数据准备
@@ -1661,7 +1670,7 @@ class CalendarGraph(BaseGraph):
         ]
 
         if not data:
-            self.chart = Calendar()
+            self.chart = Calendar(init_opts=get_default_init_opts())
             return
 
         # 2. 提取年份范围
@@ -1687,10 +1696,8 @@ class CalendarGraph(BaseGraph):
             height_val = int(height.replace("px", ""))
         else:
             height_val = 600
-            
-        calendar = Calendar(
-            init_opts=get_default_init_opts(width, height_val)
-        )
+
+        calendar = Calendar(init_opts=get_default_init_opts(width, height_val))
 
         calendar.add(
             series_name="",
@@ -1715,10 +1722,8 @@ class CalendarGraph(BaseGraph):
             height_val = int(height.replace("px", ""))
         else:
             height_val = 600
-            
-        calendar = Calendar(
-            init_opts=get_default_init_opts(width, height_val)
-        )
+
+        calendar = Calendar(init_opts=get_default_init_opts(width, height_val))
 
         # 按年份分组数据
         data_by_year = {}
@@ -1805,7 +1810,10 @@ class CalendarGraph(BaseGraph):
             calendars.append(calendar_config)
 
         # 构建原生 ECharts option
+        # 注意：chart.options = option 会完全覆盖 pyecharts 内部 options，
+        # 需在此处显式设置 backgroundColor，否则白色主题设置会失效
         option = {
+            "backgroundColor": "#ffffff",
             "tooltip": tooltip_config,
             "visualMap": visual_map_config,
             "calendar": calendars,
@@ -1822,7 +1830,7 @@ class CalendarGraph(BaseGraph):
 
         # 使用 Calendar 作为基础并直接设置 options（pyecharts 2.0.9 兼容）
         chart = Calendar(
-            init_opts=opts.InitOpts(
+            init_opts=get_default_init_opts(
                 width=self._layout.get("width", "100%"),
                 height=f"{total_height}px",
             )
@@ -1903,6 +1911,38 @@ class CalendarGraph(BaseGraph):
 # ============================================================
 
 
+def plot_bar(
+    df: pd.DataFrame,
+    config=None,
+    title: str = None,
+    layout: dict = None,
+    graph_kwargs: dict = None,
+):
+    """
+    条形图
+
+    Args:
+        df: 数据 DataFrame (index 为类别，columns 为系列)
+        config: GraphDisplayConfig 配置对象
+        title: 图表标题
+        layout: 布局覆盖参数
+        graph_kwargs: 图表参数覆盖
+
+    Returns:
+        pyecharts 图表对象
+    """
+    _layout = dict(layout) if layout else {}
+    if title:
+        _layout["title"] = title
+
+    return BarGraph(
+        df=df,
+        config=config,
+        layout=_layout,
+        graph_kwargs=graph_kwargs or {},
+    ).figure
+
+
 def plot_timeseries(
     df: pd.DataFrame,
     config=None,
@@ -1923,9 +1963,9 @@ def plot_timeseries(
     Returns:
         pyecharts 图表对象
     """
-    _layout = {"title": title} if title else {}
-    if layout:
-        _layout.update(layout)
+    _layout = dict(layout) if layout else {}
+    if title:
+        _layout["title"] = title
 
     _graph_kwargs = {"mode": "lines"}
     if graph_kwargs:
@@ -1959,9 +1999,9 @@ def plot_distribution(
     Returns:
         pyecharts 图表对象
     """
-    _layout = {"title": title} if title else {}
-    if layout:
-        _layout.update(layout)
+    _layout = dict(layout) if layout else {}
+    if title:
+        _layout["title"] = title
 
     return DistplotGraph(
         df=df,
@@ -1991,9 +2031,9 @@ def plot_qq(
     Returns:
         pyecharts 图表对象
     """
-    _layout = {"title": title} if title else {}
-    if layout:
-        _layout.update(layout)
+    _layout = dict(layout) if layout else {}
+    if title:
+        _layout["title"] = title
 
     return QQPlotGraph(
         series=series,
@@ -2023,9 +2063,9 @@ def plot_calendar(
     Returns:
         pyecharts 图表对象
     """
-    _layout = {"title": title} if title else {}
-    if layout:
-        _layout.update(layout)
+    _layout = dict(layout) if layout else {}
+    if title:
+        _layout["title"] = title
 
     return CalendarGraph(
         df=df,

@@ -270,7 +270,10 @@ class QlibDDBMySQLInitializer:
         :rtype: tuple
         """
         try:
-            schema = schema_func()
+            if callable(schema_func):
+                schema = schema_func()
+            else:
+                schema = schema_func
             all_cols = ",".join(schema.map_columns_to_fields())
             name_type = dict(schema.columns)
             return all_cols, name_type
@@ -297,7 +300,7 @@ class QlibDDBMySQLInitializer:
             )
 
             data = bridge.load_table(query)
-            if table_name in "ASHAREEODPRICES":
+            if table_name == "ASHAREEODPRICES":
                 data = data.rename(columns=FIELDS_MAPPING)
             convert_wind_date_to_datetime(data, name_type, inplace=True)
 

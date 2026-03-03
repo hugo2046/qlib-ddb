@@ -109,26 +109,26 @@ def _get_monthly_risk_analysis_with_report(
     return _monthly_df
 
 
-def _get_monthly_analysis_with_feature(
-    monthly_df: pd.DataFrame, feature: str = "annualized_return"
-) -> pd.DataFrame:
-    """
+# def _get_monthly_analysis_with_feature(
+#     monthly_df: pd.DataFrame, feature: str = "annualized_return"
+# ) -> pd.DataFrame:
+#     """
 
-    :param monthly_df:
-    :param feature:
-    :return:
-    """
-    # Use scalar grouping key to avoid pandas warning about length-1 list-like keys
-    _monthly_df_gp = monthly_df.reset_index().groupby("level_1")
+#     :param monthly_df:
+#     :param feature:
+#     :return:
+#     """
+#     # Use scalar grouping key to avoid pandas warning about length-1 list-like keys
+#     _monthly_df_gp = monthly_df.reset_index().groupby("level_1")
 
-    _name_df = _monthly_df_gp.get_group(feature).set_index(["level_0", "level_1"])
-    _temp_df = _name_df.pivot_table(
-        index="date", values=["risk"], columns=_name_df.index
-    )
-    _temp_df.columns = map(lambda x: "_".join(x[-1]), _temp_df.columns)
-    _temp_df.index = _temp_df.index.strftime("%Y-%m")
+#     _name_df = _monthly_df_gp.get_group(feature).set_index(["level_0", "level_1"])
+#     _temp_df = _name_df.pivot_table(
+#         index="date", values=["risk"], columns=_name_df.index
+#     )
+#     _temp_df.columns = map(lambda x: "_".join(x[-1]), _temp_df.columns)
+#     _temp_df.index = _temp_df.index.strftime("%Y-%m")
 
-    return _temp_df
+#     return _temp_df
 
 
 def _get_risk_analysis_figure(analysis_df: pd.DataFrame) -> Iterable[Any]:
@@ -302,14 +302,6 @@ def _get_monthly_risk_analysis_figure(report_normal_df: pd.DataFrame) -> Iterabl
 
     return (_figure,)
 
-    # for _feature in ["annualized_return", "max_drawdown", "information_ratio", "std"]:
-    #     _temp_df = _get_monthly_analysis_with_feature(_monthly_df, _feature)
-    #     yield ScatterGraph(
-    #         _temp_df,
-    #         # layout=dict(title=_feature, xaxis=dict(type="category", tickangle=45)),
-    #         graph_kwargs=graph_kwargs,
-    #         layout={"title": _feature, "title_pos_left": "center"},
-    #     ).figure
 
 
 def risk_analysis_graph(
@@ -320,72 +312,70 @@ def risk_analysis_graph(
 ) -> Iterable[Any]:
     """Generate analysis graph and monthly analysis
 
-        Example:
+    Example:
 
 
-            .. code-block:: python
+        .. code-block:: python
 
-                import qlib
-                import pandas as pd
-                from qlib.utils.time import Freq
-                from qlib.utils import flatten_dict
-                from qlib.backtest import backtest, executor
-                from qlib.contrib.evaluate import risk_analysis
-                from qlib.contrib.strategy import TopkDropoutStrategy
+            import qlib
+            import pandas as pd
+            from qlib.utils.time import Freq
+            from qlib.utils import flatten_dict
+            from qlib.backtest import backtest, executor
+            from qlib.contrib.evaluate import risk_analysis
+            from qlib.contrib.strategy import TopkDropoutStrategy
 
-                # init qlib
-                qlib.init(provider_uri=<qlib data dir>)
+            # init qlib
+            qlib.init(provider_uri=<qlib data dir>)
 
-                CSI300_BENCH = "SH000300"
-                FREQ = "day"
-                STRATEGY_CONFIG = {
-                    "topk": 50,
-                    "n_drop": 5,
-                    # pred_score, pd.Series
-                    "signal": pred_score,
-                }
+            CSI300_BENCH = "SH000300"
+            FREQ = "day"
+            STRATEGY_CONFIG = {
+                "topk": 50,
+                "n_drop": 5,
+                # pred_score, pd.Series
+                "signal": pred_score,
+            }
 
-                EXECUTOR_CONFIG = {
-                    "time_per_step": "day",
-                    "generate_portfolio_metrics": True,
-                }
+            EXECUTOR_CONFIG = {
+                "time_per_step": "day",
+                "generate_portfolio_metrics": True,
+            }
 
-                backtest_config = {
-                    "start_time": "2017-01-01",
-                    "end_time": "2020-08-01",
-                    "account": 100000000,
-                    "benchmark": CSI300_BENCH,
-                    "exchange_kwargs": {
-                        "freq": FREQ,
-                        "limit_threshold": 0.095,
-                        "deal_price": "close",
-                        "open_cost": 0.0005,
-                        "close_cost": 0.0015,
-                        "min_cost": 5,
-                    },
-                }
+            backtest_config = {
+                "start_time": "2017-01-01",
+                "end_time": "2020-08-01",
+                "account": 100000000,
+                "benchmark": CSI300_BENCH,
+                "exchange_kwargs": {
+                    "freq": FREQ,
+                    "limit_threshold": 0.095,
+                    "deal_price": "close",
+                    "open_cost": 0.0005,
+                    "close_cost": 0.0015,
+                    "min_cost": 5,
+                },
+            }
 
-                # strategy object
-                strategy_obj = TopkDropoutStrategy(**STRATEGY_CONFIG)
-                # executor object
-                executor_obj = executor.SimulatorExecutor(**EXECUTOR_CONFIG)
-                # backtest
-                portfolio_metric_dict, indicator_dict = backtest(executor=executor_obj, strategy=strategy_obj, **backtest_config)
-                analysis_freq = "{0}{1}".format(*Freq.parse(FREQ))
-                # backtest info
-                report_normal_df, positions_normal = portfolio_metric_dict.get(analysis_freq)
-                analysis = dict()
-                analysis["excess_return_without_cost"] = risk_analysis(
-                    report_normal_df["return"] - report_normal_df["bench"], freq=analysis_freq
-                )
-                analysis["excess_return_with_cost"] = risk_analysis(
-                    report_normal_df["return"] - report_normal_df["bench"] - report_normal_df["cost"], freq=analysis_freq
-                )
+            # strategy object
+            strategy_obj = TopkDropoutStrategy(**STRATEGY_CONFIG)
+            # executor object
+            executor_obj = executor.SimulatorExecutor(**EXECUTOR_CONFIG)
+            # backtest
+            portfolio_metric_dict, indicator_dict = backtest(executor=executor_obj, strategy=strategy_obj, **backtest_config)
+            analysis_freq = "{0}{1}".format(*Freq.parse(FREQ))
+            # backtest info
+            report_normal_df, positions_normal = portfolio_metric_dict.get(analysis_freq)
+            analysis = dict()
+            analysis["excess_return_without_cost"] = risk_analysis(
+                report_normal_df["return"] - report_normal_df["bench"], freq=analysis_freq
+            )
+            analysis["excess_return_with_cost"] = risk_analysis(
+                report_normal_df["return"] - report_normal_df["bench"] - report_normal_df["cost"], freq=analysis_freq
+            )
 
-                analysis_df = pd.concat(analysis)  # type: pd.DataFrame
-                analysis_position.risk_analysis_graph(analysis_df, report_normal_df)
-
-
+            analysis_df = pd.concat(analysis)  # type: pd.DataFrame
+            analysis_position.risk_analysis_graph(analysis_df, report_normal_df)
 
     :param analysis_df: analysis data, index is **pd.MultiIndex**; columns names is **[risk]**.
 

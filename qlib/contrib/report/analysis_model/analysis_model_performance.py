@@ -91,13 +91,14 @@ def compute_group_return(
     """
     计算分组收益
 
-    Args:
-        pred_label: 包含 score 和 label 的 DataFrame
-        N: 分组数，默认为 5
-        reverse: 是否反转分数
-
-    Returns:
-        (group_cum_ret, dist_data): 累计收益 DataFrame 和分布数据 DataFrame
+    :param pred_label: 包含 score 和 label 的 DataFrame
+    :param N: 分组数，默认为 5
+    :param reverse: 是否反转分数
+    :return: (group_cum_ret, dist_data, group_avg_ret, group_ret)
+        - group_cum_ret: 累计收益 DataFrame
+        - dist_data: Long-Short / Long-Average 分布数据 DataFrame
+        - group_avg_ret: 各组平均收益 Series
+        - group_ret: 日度收益 DataFrame（含 Long-Short、Long-Average）
     """
     df = pred_label.copy()
     if reverse:
@@ -129,30 +130,36 @@ def compute_group_return(
     group_cum_ret = group_ret.cumsum()
     dist_data = group_ret[["Long-Short", "Long-Average"]].copy()
 
-    return group_cum_ret, dist_data
+    # 6. 画分组柱状图
+    group_avg_ret = group_ret.filter(regex="^Group").mean()
+
+    return group_cum_ret, dist_data, group_avg_ret, group_ret
 
 
 def _group_return(
     pred_label: pd.DataFrame, N: int = 5, reverse: bool = False, config=None, **kwargs
 ) -> tuple:
     """
-    绘制分组累计收益图 + 分布图
+    绘制分组累计收益图 + 分布图 + 条形图 + 日度收益日历热力图
 
-    Args:
-        pred_label: 包含 score 和 label 的 DataFrame
-        N: 分组数，默认为 5
-        reverse: 是否反转分数
-        config: 可选的配置
-
-    Returns:
-        (group_scatter_figure, group_hist_figure)
+    :param pred_label: 包含 score 和 label 的 DataFrame
+    :param N: 分组数，默认为 5
+    :param reverse: 是否反转分数
+    :param config: 可选的配置
+    :return: (时序图, 分布图, 条形图, 日历热力图)
     """
     from copy import deepcopy
-    from ..display_config import GROUP_RETURN_CONFIG, GROUP_RETURN_SUBPLOTS_CONFIG
-    from ..graph import plot_timeseries
+    from ..display_config import (
+        GROUP_RETURN_CONFIG,
+        GROUP_RETURN_SUBPLOTS_CONFIG,
+        IC_CALENDAR_LAYOUT,
+    )
+    from ..graph import plot_timeseries, plot_bar, plot_calendar
 
     # 1. 计算
-    group_cum_ret, dist_data = compute_group_return(pred_label, N, reverse)
+    group_cum_ret, dist_data, group_avg_ret, group_ret = compute_group_return(
+        pred_label, N, reverse
+    )
 
     # 2. 时序图
     config = config or GROUP_RETURN_CONFIG
@@ -184,24 +191,60 @@ def _group_return(
         sub_graph_data=sub_graph_data,
     )
 
-    return graph_ts_fig, graph_hist.figure
+    # 4. 条形图
+    group_avg_ret_df = group_avg_ret.to_frame("Average Return")
+    graph_bar_fig = plot_bar(
+        group_avg_ret_df,
+        config=GROUP_RETURN_CONFIG,
+        title="Average Return by Group",
+        layout={"width": "100%", "height": 360},
+        graph_kwargs={
+            "axis_formatter": JsCode(get_axis_percent_formatter(4)),
+            "is_show_legend": False,
+        },
+    )
+
+    # 5. Daily Returns Calendar Heatmap（Long-Short 日度收益日历图）
+    _ls_ret = group_ret["Long-Short"].dropna()
+    if isinstance(_ls_ret.index, pd.MultiIndex):
+        _ls_ret.index = _ls_ret.index.get_level_values("datetime")
+
+    graph_calendar_fig = plot_calendar(
+        _ls_ret.to_frame("Long-Short"),
+        title="Daily Returns Calendar (Long-Short)",
+        layout=IC_CALENDAR_LAYOUT,
+        graph_kwargs={
+            "visual_map_min": _ls_ret.min(),
+            "visual_map_max": _ls_ret.max(),
+            "tooltip": {
+                "position": "top",
+                "formatter": JsCode(get_calendar_formatter(4)),
+            },
+            "visualMap": {
+                "calculable": True,
+                "orient": "horizontal",
+                "left": "75%",
+                "top": "top",
+                "inRange": {
+                    "color": ["#ef4444", "#fca5a5", "#f3f4f6", "#6ee7b7", "#10b981"]
+                },
+            },
+        },
+    )
+
+    return graph_ts_fig, graph_hist.figure, graph_bar_fig, graph_calendar_fig
 
 
 def compute_ic(
     pred_label: pd.DataFrame,
     methods: Sequence[str] = ("IC", "Rank IC"),
-    show_nature_day: bool = False,
 ) -> pd.DataFrame:
     """
-    计算 IC 和 Rank IC 时序
+    计算原始日度 IC 和 Rank IC 时序
 
-    Args:
-        pred_label: 包含 score 和 label 的 DataFrame
-        methods: 计算方法列表，默认 ("IC", "Rank IC")
-        show_nature_day: 是否按自然日填充
-
-    Returns:
-        DataFrame，index 为日期，columns 为各 IC 方法
+    :param pred_label: 包含 score 和 label 的 DataFrame，MultiIndex (datetime, instrument)
+    :param methods: 计算方法列表，默认 ("IC", "Rank IC")
+    :return: DataFrame，index 为日期，columns 为各 IC 方法
     """
     _methods_mapping = {"IC": "pearson", "Rank IC": "spearman"}
 
@@ -219,11 +262,6 @@ def compute_ic(
         axis=1,
     )
 
-    # 按自然日填充
-    if show_nature_day:
-        date_index = pd.date_range(ic_df.index.min(), ic_df.index.max())
-        ic_df = ic_df.reindex(date_index)
-
     return ic_df
 
 
@@ -236,21 +274,32 @@ def _pred_ic(
     """
     绘制 IC 分析图 (IC/Rank IC 时序, Daily IC 热力图, IC 分布 + Q-Q 图)
 
-    Args:
-        pred_label: 包含 score 和 label 的 DataFrame
-        methods: 计算方法列表
-        config: 可选的配置
+    :param pred_label: 包含 score 和 label 的 DataFrame
+    :param methods: 计算方法列表
+    :param config: 可选的配置
+    :param kwargs: 额外参数：
+        - accumulative (bool): 时序图是否使用累积 IC，默认 False。
+          Calendar / Distribution / Q-Q 图固定使用原始日度 IC，不受此参数影响。
+        - show_nature_day (bool): 是否按自然日填充
 
-    Returns:
-        图表对象列表
+    :return: 图表对象列表，顺序为 [时序图, 日历热力图, 分布+QQ组合图]
     """
     from ..graph import plot_timeseries, plot_calendar
 
-    # 1. 计算
+    # 1. 计算原始日度 IC（只计算一次）
     show_nature_day = kwargs.get("show_nature_day", False)
-    ic_df = compute_ic(pred_label, methods, show_nature_day)
+    accumulative = kwargs.get("accumulative", False)
+    ic_df_raw = compute_ic(pred_label, methods)
 
-    # 2. IC 时序图
+    # 2. 时序图数据：根据参数做累积 / 自然日填充后处理
+    ic_df = ic_df_raw.copy()
+    if accumulative:
+        ic_df = ic_df.cumsum()
+    if show_nature_day:
+        date_index = pd.date_range(ic_df.index.min(), ic_df.index.max())
+        ic_df = ic_df.reindex(date_index)
+
+    # 3. IC 时序图（使用后处理后的 ic_df，支持累积模式）
     ic_ts_config = config or MODEL_PERFORMANCE_CONFIG
     graph_ts_fig = plot_timeseries(
         ic_df,
@@ -259,8 +308,8 @@ def _pred_ic(
         layout={"width": "100%"},
     )
 
-    # 3. Daily IC Calendar Heatmap
-    _ic = ic_df.iloc[:, 0]  # 取第一列 (通常是 IC)
+    # 4. Daily IC Calendar Heatmap（固定使用原始日度 IC）
+    _ic = ic_df_raw.iloc[:, 0]  # 取第一列 (通常是 IC)
     if isinstance(_ic.index, pd.MultiIndex):
         _ic.index = _ic.index.get_level_values("datetime")
 
@@ -287,7 +336,7 @@ def _pred_ic(
         },
     )
 
-    # 4. IC 分布与 Q-Q 图 (使用 Grid 组合)
+    # 5. IC 分布与 Q-Q 图（固定使用原始日度 IC）
     _ic_df = _ic.to_frame("IC")
     _bin_size = float(((_ic_df.max() - _ic_df.min()) / 20).min())
 
@@ -501,6 +550,7 @@ def model_performance_graph(
     N: int = 5,
     reverse: bool = False,
     rank: bool = False,
+    cumulative_ic: bool = False,
     graph_names: list = ["group_return", "pred_ic", "pred_autocorr", "pred_turnover"],
     show_notebook: bool = True,
     **kwargs,
@@ -513,6 +563,7 @@ def model_performance_graph(
     :param N: 分组数
     :param reverse: 是否反转分数
     :param rank: 是否使用 Rank IC
+    :param cumulative_ic: 是否绘制累积 IC 曲线（cumsum），仅当 graph_names 包含 'pred_ic' 时生效
     :param graph_names: 图表名称列表；默认 ['group_return', 'pred_ic', 'pred_autocorr']
     :param show_notebook: 是否在 Notebook 中显示
     :param **kwargs: 额外参数（兼容原始接口）
@@ -521,6 +572,16 @@ def model_performance_graph(
 
     # 使用与原始版本相同的实现方式：遍历 graph_names 动态调用函数
     figure_list = []
+    # 将 cumulative_ic 注入 kwargs，传递给 _pred_ic 中的 compute_ic（参数名映射为 accumulative）
+    kwargs.setdefault("accumulative", cumulative_ic)
+    if cumulative_ic and "pred_ic" not in graph_names:
+        import warnings
+
+        warnings.warn(
+            "cumulative_ic=True 仅对 'pred_ic' 有效，但 graph_names 中未包含 'pred_ic'，该参数不会生效。",
+            UserWarning,
+            stacklevel=2,
+        )
     for graph_name in graph_names:
         # 动态调用函数（如 _group_return, _pred_ic, _pred_autocorr）
         # 注意：eval() 与原始版本保持一致，用于动态函数调用
