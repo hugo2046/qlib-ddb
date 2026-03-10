@@ -21,5 +21,5 @@ __all__ = [
     "report_graph",
     "rank_label_graph",
     "risk_analysis_graph",
-    "risk_analysis_graph_pyecharts"
+    "risk_analysis_graph_pyecharts",
 ]

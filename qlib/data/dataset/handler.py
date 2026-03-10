@@ -19,6 +19,8 @@ from . import processor as processor_module
 from . import loader as data_loader_module
 
 
+DATA_KEY_TYPE = Literal["raw", "infer", "learn"]
+
 # TODO: A more general handler interface which does not relies on internal pd.DataFrame is needed.
 class DataHandler(Serializable):
     """

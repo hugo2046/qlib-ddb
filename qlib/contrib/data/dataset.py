@@ -9,7 +9,6 @@ import pandas as pd
 
 from qlib.data.dataset import DatasetH
 
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 

@@ -16,7 +16,6 @@ def get_version(rel_path: str) -> str:
             return line.split(delim)[1]
     raise RuntimeError("Unable to find version string.")
 
-
 NUMPY_INCLUDE = numpy.get_include()
 
 VERSION = get_version("qlib/__init__.py")
