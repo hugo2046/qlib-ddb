@@ -226,7 +226,7 @@ def _group_return(
                 "left": "75%",
                 "top": "top",
                 "inRange": {
-                    "color": ["#ef4444", "#fca5a5", "#f3f4f6", "#6ee7b7", "#10b981"]
+                    "color": ["#10b981", "#6ee7b7", "#f3f4f6", "#fca5a5", "#ef4444"]
                 },
             },
         },
