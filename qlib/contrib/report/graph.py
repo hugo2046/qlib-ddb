@@ -1864,6 +1864,7 @@ class CalendarGraph(BaseGraph):
             visual_map_pos_left = visual_map_config.get("left", "center")
             visual_map_pos_top = visual_map_config.get("top", "60")
             is_piecewise = visual_map_config.get("is_piecewise", False)
+            visual_map_range_color = visual_map_config.get("inRange", {}).get("color", None)
 
             # 从 graph_kwargs 获取 tooltip 配置
             tooltip_config = self._graph_kwargs.get("tooltip", {})
@@ -1891,6 +1892,7 @@ class CalendarGraph(BaseGraph):
                     is_piecewise=is_piecewise,
                     pos_left=visual_map_pos_left,
                     pos_top=visual_map_pos_top,
+                    **({"range_color": visual_map_range_color} if visual_map_range_color else {}),
                 ),
                 tooltip_opts=tooltip_opts,
             )
