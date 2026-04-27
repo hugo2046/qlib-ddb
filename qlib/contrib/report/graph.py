@@ -1731,10 +1731,12 @@ class CalendarGraph(BaseGraph):
             year_str = str(year)
             data_by_year[year] = [[d, v] for d, v in data if d.startswith(year_str)]
 
-        # 计算数值范围
+        # 计算数值范围（优先使用外部传入的 visual_map_min/max）
         values = [v for _, v in data]
-        min_val = min(values) if values else 0
-        max_val = max(values) if values else 1
+        _ext_min = self._graph_kwargs.get("visual_map_min", None)
+        _ext_max = self._graph_kwargs.get("visual_map_max", None)
+        min_val = float(_ext_min) if _ext_min is not None else (min(values) if values else 0)
+        max_val = float(_ext_max) if _ext_max is not None else (max(values) if values else 1)
 
         # 紧凑布局：年份间留小间距
         # 第一年预留空间给月份标签(~100px) + 日历高度(~120px)
