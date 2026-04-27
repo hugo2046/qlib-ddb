@@ -209,13 +209,15 @@ def _group_return(
     if isinstance(_ls_ret.index, pd.MultiIndex):
         _ls_ret.index = _ls_ret.index.get_level_values("datetime")
 
+    # min/max 对称化：确保 0 为颜色中点（负值=绿，正值=红）
+    _ls_abs_max = max(abs(_ls_ret.min()), abs(_ls_ret.max()))
     graph_calendar_fig = plot_calendar(
         _ls_ret.to_frame("Long-Short"),
         title="Daily Returns Calendar (Long-Short)",
         layout=IC_CALENDAR_LAYOUT,
         graph_kwargs={
-            "visual_map_min": _ls_ret.min(),
-            "visual_map_max": _ls_ret.max(),
+            "visual_map_min": -_ls_abs_max,
+            "visual_map_max": _ls_abs_max,
             "tooltip": {
                 "position": "top",
                 "formatter": JsCode(get_calendar_formatter(4)),
@@ -313,13 +315,15 @@ def _pred_ic(
     if isinstance(_ic.index, pd.MultiIndex):
         _ic.index = _ic.index.get_level_values("datetime")
 
+    # min/max 对称化：确保 0 为颜色中点（负值=绿，正值=红）
+    _ic_abs_max = max(abs(_ic.min()), abs(_ic.max()))
     graph_calendar_fig = plot_calendar(
         _ic.to_frame("IC"),
         title="Daily IC Calendar",
         layout=IC_CALENDAR_LAYOUT,
         graph_kwargs={
-            "visual_map_min": _ic.min(),
-            "visual_map_max": _ic.max(),
+            "visual_map_min": -_ic_abs_max,
+            "visual_map_max": _ic_abs_max,
             "tooltip": {
                 "position": "top",
                 "formatter": JsCode(get_calendar_formatter(4)),
