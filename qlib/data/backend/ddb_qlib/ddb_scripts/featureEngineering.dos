@@ -683,12 +683,14 @@ class FeatureEngine{
             // 检查结果是否为空
             if(baseData.rows() == 0) {
                 print("警告: 基础数据获取失败,请检查表达式引用字段: " + fieldExpr);
-                return createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
+                // 返回空 dict 而不是 TABLE，与正常路径返回类型保持一致
+                // union_dict 期待 dict，收到 TABLE 会报 "Incompatible vector/matrix size"
+                return dict(STRING, ANY, true);
             };
 
         } catch(ex){
             print("错误:表达式中含有未知基础字段.请检查: " + ex);
-            return createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
+            return dict(STRING, ANY, true);
         };
         
         // 生成数据字典

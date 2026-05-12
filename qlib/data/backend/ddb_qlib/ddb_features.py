@@ -250,6 +250,12 @@ def fetch_features_from_ddb(
     if isinstance(instruments, str):
         instruments = [instruments]
 
+    # 防御性检查：filter_pipe 可能把 instruments 全部过滤掉
+    # 空 instruments 进入 DDB 会触发 fetchFeatures 空数据兜底路径，
+    # 返回 TABLE 与 union_dict 期望的 dict 类型不一致，报 "Incompatible vector/matrix size"
+    if not instruments:
+        return pd.DataFrame()
+
     # 上传变量
     session.upload(
         {
@@ -309,6 +315,11 @@ def fetch_features_from_ddb(
             print(f"expressions:{normalized_expr}")
             print(f"baseFields:{base_fields}")
             raise RuntimeError(f"DolphinDB 因子计算失败: {e}")
+        # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
+        # 避免 pd.concat({}) 报 "No objects to concatenate"
+        if not data:
+            return pd.DataFrame()
+
         try:
             data: Dict[str, pd.DataFrame] = {
                 k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
