@@ -52,7 +52,10 @@ def datetime_groupby_apply(
     def _naive_group_apply(df):
         if isinstance(apply_func, str):
             return getattr(df.groupby(axis=axis, level=level), apply_func)()
-        return df.groupby(axis=axis, level=level).apply(apply_func)
+        # group_keys=False：pandas 2.x 默认 True 会把分组键作为 outer level 注入结果索引，
+        # 导致 (datetime, instrument) 变成 (datetime, datetime, instrument)。
+        # apply_func 期望返回与输入同形同索引的 DataFrame，故显式关闭 group_keys。
+        return df.groupby(axis=axis, level=level, group_keys=False).apply(apply_func)
 
     if n_jobs != 1:
         dfs = ParallelExt(n_jobs=n_jobs)(
