@@ -20,7 +20,7 @@ NUMPY_INCLUDE = numpy.get_include()
 
 VERSION = get_version("qlib/__init__.py")
 
-
+# python setup.py build_ext --inplace
 setup(
     version=VERSION,
     ext_modules=[
