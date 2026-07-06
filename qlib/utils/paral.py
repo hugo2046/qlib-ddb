@@ -21,7 +21,12 @@ class ParallelExt(Parallel):
         maxtasksperchild = kwargs.pop("maxtasksperchild", None)
         super(ParallelExt, self).__init__(*args, **kwargs)
         if isinstance(self._backend, MultiprocessingBackend):
-            self._backend_args["maxtasksperchild"] = maxtasksperchild
+            # ⚠️ joblib 1.3 起 Parallel 的 _backend_args 改名为 _backend_kwargs。
+            # 兼容两种命名：把 maxtasksperchild 注入 backend kwargs，由 configure()
+            # 在建池时透传给 MemmappingPool/Pool（控制子进程回收，缓解内存泄漏）。
+            backend_kwargs = getattr(self, "_backend_kwargs", None) or getattr(self, "_backend_args", None)
+            if backend_kwargs is not None:
+                backend_kwargs["maxtasksperchild"] = maxtasksperchild
 
 
 def datetime_groupby_apply(
