@@ -9,7 +9,7 @@ Description:
 import bisect
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterable, List, Tuple, Union
 
 import dolphindb as ddb
 import numpy as np
@@ -73,6 +73,30 @@ OPERATOR_MAPPING: Dict = {
 }
 
 
+def _sort_ddb_scripts(scripts: Iterable[Path]) -> List[Path]:
+    """对 ddb_scripts 下脚本排序，返回与文件系统无关的确定性加载顺序。
+
+    ⚠️ 顺序约束（已通过实际脚本依赖核查验证）：
+    - ``ops.dos`` 定义了 ``Slope``/``Rsquare``/``Resi`` 等基础算子；
+    - ``qlib158Alpha.dos`` 跨文件引用 ``Slope``（首次使用见 qlib158Alpha.dos:154）；
+    - 故 ``ops.dos`` 必须先于其它脚本加载。
+
+    ``Path.glob()`` 返回顺序依赖文件系统 ``readdir``（macOS APFS 与 Linux ext4
+    顺序不同）。若直接遍历 glob 结果，Linux 上 ``qlib158Alpha.dos`` 可能先于
+    ``ops.dos`` 执行，触发
+    ``Syntax Error: [line #154] Cannot recognize the token Slope``，
+    导致 qlib 初始化失败。
+
+    参数:
+        scripts: 待排序的脚本路径集合（通常来自 ``script_path.glob("*.dos")``）。
+
+    返回:
+        排序后的路径列表：``ops.dos`` 置首，其余按文件名字母序。
+    """
+    # ops.dos 置首（键 0），其余按文件名字母序（键 1）
+    return sorted(scripts, key=lambda p: (0 if p.name == "ops.dos" else 1, p.name))
+
+
 def register_ddb_functions_to_qlib(session: ddb.Session) -> None:
     """
     在 DolphinDB 会话中注册与 qlib 对应的自定义函数
@@ -84,9 +108,10 @@ def register_ddb_functions_to_qlib(session: ddb.Session) -> None:
     """
 
     # 在会话中执行函数定义脚本
-
+    # ⚠️ 必须用 _sort_ddb_scripts 确定加载顺序，不能直接遍历 glob（其顺序依赖
+    #    文件系统 readdir，跨平台不一致；详见 _sort_ddb_scripts 的文档）。
     script_path = Path(__file__).parent / "ddb_scripts"
-    for script_file in script_path.glob("*.dos"):
+    for script_file in _sort_ddb_scripts(script_path.glob("*.dos")):
         session.runFile(script_file)
     get_module_logger("ddb_features").info("已注册 qlib 兼容函数到 DolphinDB 会话")
 
