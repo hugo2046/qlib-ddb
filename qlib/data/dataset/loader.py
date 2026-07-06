@@ -3,6 +3,7 @@
 
 import abc
 from pathlib import Path
+import threading
 import warnings
 import pandas as pd
 
@@ -158,6 +159,15 @@ class DLWParser(DataLoader):
 class QlibDataLoader(DLWParser):
     """Same as QlibDataLoader. The fields can be define by config"""
 
+    # 类级锁：跨所有 QlibDataLoader 实例共享（类变量形式的全局互斥锁）。
+    # 并发 load() 会共享 qlib 全局数据层（DolphinDB session / 内部缓存），该层非线程
+    # 安全，并发求值时共享缓冲被互相覆盖——线程 A 请求 instruments X、线程 B 请求
+    # instruments Y（X∩Y=∅），并发执行后 A 的返回会混入 Y 的 instruments（反之亦然）。
+    # 串行化整个 load 体是已知最小正确修法（吞吐换正确性，对本仓库所有消费方安全）。
+    # Reentrancy：load_group_df → D.features 不会回调本类 load / 不再获取本锁，无嵌套
+    # 加锁风险，故用 Lock 而非 RLock。
+    _load_lock = threading.Lock()
+
     def __init__(
         self,
         config: Tuple[list, tuple, dict],
@@ -203,6 +213,12 @@ class QlibDataLoader(DLWParser):
                 assert (
                     self.inst_processors
                 ), f"freq(={self.freq}), inst_processors(={self.inst_processors}) cannot be None/empty"
+
+    def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
+        # 串行化整个 load 体（含 is_group 两分支与 load_group_df 调用），阻断并发 load
+        # 共享 qlib 数据层时的跨线程数据污染。详见 _load_lock 注释。
+        with QlibDataLoader._load_lock:
+            return super().load(instruments, start_time, end_time)
 
     def load_group_df(
         self,
