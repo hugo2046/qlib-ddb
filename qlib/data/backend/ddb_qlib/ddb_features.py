@@ -209,6 +209,49 @@ def build_field_expr(
     return [col if col in table_columns else f"0 as {col}" for col in base_fields]
 
 
+def apply_spans_mask(data: pd.DataFrame, spans: Dict[str, List]) -> pd.DataFrame:
+    """按成分股 spans（入池/出池区间）对结果面板做行掩码。
+
+    用于 ``fetch_features_from_ddb`` 非纯字段分支的 Python 侧兜底过滤：
+    ``FeatureEngineeringByDate`` 经 ``mr`` 分布式执行时，worker 端无法还原
+    ``conditionalFilter`` 所需的 dict（报 "filterMap must be a dictionary"），
+    故 DDB 端按键列表全量计算，spans 过滤在此处补齐。先算后掩码的语义与
+    原版 qlib ``inst_calculator``（data.py 中按 spans 做 mask）一致。
+
+    :param data: 以 ``(instrument, datetime)`` 为 MultiIndex 的结果面板。
+    :type data: pd.DataFrame
+    :param spans: 股票代码到入池/出池区间列表的映射，
+        形如 ``{code: [(入池日, 出池日), ...]}``；不在映射中的代码整体剔除。
+    :type spans: Dict[str, List]
+    :return: 仅保留各代码在其 spans 区间内行的面板。
+    :rtype: pd.DataFrame
+    """
+    if data.empty:
+        return data
+
+    # 展开 spans 为 (instrument, begin, end) 边界表，与行索引 merge 后向量化判断
+    bounds = pd.DataFrame(
+        [(code, begin, end) for code, span_list in spans.items() for begin, end in span_list],
+        columns=["instrument", "begin", "end"],
+    )
+    idx = pd.DataFrame(
+        {
+            "row": np.arange(len(data)),
+            "instrument": data.index.get_level_values("instrument"),
+            "datetime": data.index.get_level_values("datetime"),
+        }
+    )
+    merged = idx.merge(bounds, on="instrument", how="inner")
+    hit_rows = merged.loc[
+        (merged["datetime"] >= merged["begin"]) & (merged["datetime"] <= merged["end"]),
+        "row",
+    ].unique()
+
+    mask = np.zeros(len(data), dtype=bool)
+    mask[hit_rows] = True
+    return data[mask]
+
+
 # ddb_features使用
 def fetch_features_from_ddb(
     session: ddb.Session,
@@ -327,8 +370,13 @@ def fetch_features_from_ddb(
     else:
 
         # 使用mr防止因子计算时OOM
-        ddb_expr = f"""        
-        FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,"{db_name}","{table_name}")
+        # ⚠️ dict（成分股 spans）时不能把 dict 传给 FeatureEngineeringByDate：
+        # 其内部经 mr 分布式执行，worker 端还原不了 conditionalFilter 所需的
+        # dict（报 "filterMap must be a dictionary"）。故此处传键列表全量计算，
+        # spans 过滤在拿到结果后由 apply_spans_mask 在 Python 侧补齐。
+        inst_expr = "keys(instruments)" if isinstance(instruments, dict) else "instruments"
+        ddb_expr = f"""
+        FeatureEngineeringByDate({inst_expr},expressions,baseFields,start_time,end_time,"{db_name}","{table_name}")
         """
         # data: pd.DataFrame = session.run(ddb_expr)
         try:
@@ -386,8 +434,13 @@ def fetch_features_from_ddb(
 
     data = data.sort_index()
     if is_pure_fields:
+        # 纯字段分支的 spans 过滤已由 DDB 端 conditionalFilter 完成，无需掩码
         data.columns = "$" + data.columns
         return data
+
+    # 非纯字段分支：DDB 端按键列表全量计算，此处按 spans 补掩码（见上方注释）
+    if isinstance(instruments, dict):
+        data = apply_spans_mask(data, instruments)
     # 重命名columns将$改为去掉$或根据已有的字典进行重命名
     try:
         aliases_order = list(normalized_expr.values())

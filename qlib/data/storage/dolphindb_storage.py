@@ -216,11 +216,15 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
         super(DBFeatureStorage, self).__init__(instrument, field, freq, **kwargs)
         self.field = field
         self.freq = freq.lower()
-        self.instrument = (
-            instrument.upper()
-            if isinstance(instrument, str)
-            else list(map(lambda x: x.upper(), instrument))
-        )
+        # ⚠️ dict 入参为成分股 spans（{code: [(入池, 出池), ...]}），必须保持
+        # dict 原型透传给 fetch_features_from_ddb 的 conditionalFilter 分支；
+        # 若迭代取键退化为 list，入池/出池日期过滤会静默失效（出池不截断）。
+        if isinstance(instrument, str):
+            self.instrument = instrument.upper()
+        elif isinstance(instrument, dict):
+            self.instrument = {k.upper(): v for k, v in instrument.items()}
+        else:
+            self.instrument = [x.upper() for x in instrument]
         self.db_path = f"Qlib{self.storage_name.title()}s{self.freq.title()}"
         self.table_name = "Features"
         
