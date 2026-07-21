@@ -110,11 +110,65 @@ class TestRegisterLoadsOpsFirst:
         register_ddb_functions_to_qlib(session)  # type: ignore[arg-type]  # 鸭子类型假会话
         assert session.files[0] == "ops.dos"
 
-    def test_register_loads_every_script_exactly_once(self) -> None:
-        """所有 .dos 脚本都被加载且仅加载一次。"""
+    def test_register_loads_core_scripts_exactly_once(self) -> None:
+        """默认仅加载核心三件套（alpha 库 119KB 改为按需惰性加载）且无重复。"""
         session = _FakeSession()
         register_ddb_functions_to_qlib(session)  # type: ignore[arg-type]  # 鸭子类型假会话
+        assert session.files == [
+            "ops.dos",
+            "featureEngineering.dos",
+            "prepareInstruments.dos",
+        ]
+
+    def test_register_preload_loads_every_script(self) -> None:
+        """preload_alpha_libs=True 恢复历史全量加载行为（ops.dos 仍置首）。"""
+        session = _FakeSession()
+        register_ddb_functions_to_qlib(session, preload_alpha_libs=True)  # type: ignore[arg-type]
         script_dir = Path(register_ddb_functions_to_qlib.__code__.co_filename).parent / "ddb_scripts"
         expected_count = len(list(script_dir.glob("*.dos")))
+        assert session.files[0] == "ops.dos"
         assert len(session.files) == expected_count
         assert len(set(session.files)) == expected_count  # 无重复
+
+
+class TestLazyAlphaLibLoading:
+    """alpha 因子库按字段引用惰性加载（每会话每库仅一次）。"""
+
+    def _registered_session(self) -> _FakeSession:
+        session = _FakeSession()
+        register_ddb_functions_to_qlib(session)  # type: ignore[arg-type]
+        session.files.clear()  # 只观察后续惰性加载
+        return session
+
+    def test_alpha_field_triggers_single_load(self) -> None:
+        from qlib.data.backend.ddb_qlib.ddb_features import ensure_alpha_libs_loaded
+
+        session = self._registered_session()
+        ensure_alpha_libs_loaded(session, ["gtjaAlpha3($open,$close)", "$high"])
+        assert session.files == ["gtja191Alpha.dos"]
+        # 第二次引用同库：不再加载
+        ensure_alpha_libs_loaded(session, ["gtjaAlpha5($close)"])
+        assert session.files == ["gtja191Alpha.dos"]
+
+    def test_plain_fields_load_nothing(self) -> None:
+        from qlib.data.backend.ddb_qlib.ddb_features import ensure_alpha_libs_loaded
+
+        session = self._registered_session()
+        ensure_alpha_libs_loaded(session, ["$close", "Ref($close,1)"])
+        assert session.files == []
+
+    def test_case_insensitive_match(self) -> None:
+        from qlib.data.backend.ddb_qlib.ddb_features import ensure_alpha_libs_loaded
+
+        session = self._registered_session()
+        ensure_alpha_libs_loaded(session, ["WQAlpha1($close)", "qlib158Alpha2($open)"])
+        assert sorted(session.files) == ["qlib158Alpha.dos", "wq101alpha.dos"]
+
+    def test_preloaded_session_skips_lazy_load(self) -> None:
+        from qlib.data.backend.ddb_qlib.ddb_features import ensure_alpha_libs_loaded
+
+        session = _FakeSession()
+        register_ddb_functions_to_qlib(session, preload_alpha_libs=True)  # type: ignore[arg-type]
+        session.files.clear()
+        ensure_alpha_libs_loaded(session, ["gtjaAlpha3($open,$close)"])
+        assert session.files == []

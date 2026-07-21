@@ -96,23 +96,100 @@ def _sort_ddb_scripts(scripts: Iterable[Path]) -> List[Path]:
     return sorted(scripts, key=lambda p: (0 if p.name == "ops.dos" else 1, p.name))
 
 
-def register_ddb_functions_to_qlib(session: ddb.Session) -> None:
+# 核心脚本：查询引擎必需，init 即加载（ops.dos 必须置首，见 _sort_ddb_scripts）
+CORE_DDB_SCRIPTS: Tuple[str, ...] = (
+    "ops.dos",
+    "featureEngineering.dos",
+    "prepareInstruments.dos",
+)
+
+# alpha 因子库（合计约 119KB 脚本）：仅当字段引用对应前缀函数时才按需加载，
+# 避免每次 qlib.init 都让服务器解析大量通常用不到的脚本（社区版 2 核/8GB）
+ALPHA_LIB_SCRIPTS: Dict[str, str] = {
+    "gtjaalpha": "gtja191Alpha.dos",
+    "qlib158alpha": "qlib158Alpha.dos",
+    "wqalpha": "wq101alpha.dos",
+}
+
+# 会话对象上记录已加载 alpha 库前缀集合的属性名（函数注册是会话级状态）
+_LOADED_LIBS_ATTR = "_qlib_loaded_alpha_libs"
+
+
+def register_ddb_functions_to_qlib(
+    session: ddb.Session, preload_alpha_libs: Union[bool, None] = None
+) -> None:
     """
     在 DolphinDB 会话中注册与 qlib 对应的自定义函数
 
-    这些函数实现了 qlib 中的特定操作，使 DolphinDB 能够兼容 qlib 的表达式计算
+    这些函数实现了 qlib 中的特定操作，使 DolphinDB 能够兼容 qlib 的表达式计算。
+    默认仅加载核心脚本（ops/featureEngineering/prepareInstruments）；三个
+    alpha 因子库由 :func:`ensure_alpha_libs_loaded` 在字段引用时按需加载。
 
     参数:
     - session: DolphinDB 会话实例
+    - preload_alpha_libs: True 时恢复历史行为（init 全量加载 alpha 库）；
+      None 时读取配置 ``C["ddb_preload_alpha_libs"]``（默认 False）
     """
+    if preload_alpha_libs is None:
+        try:
+            from ....config import C
+
+            preload_alpha_libs = bool(C.get("ddb_preload_alpha_libs", False))
+        except Exception:
+            preload_alpha_libs = False
 
     # 在会话中执行函数定义脚本
     # ⚠️ 必须用 _sort_ddb_scripts 确定加载顺序，不能直接遍历 glob（其顺序依赖
     #    文件系统 readdir，跨平台不一致；详见 _sort_ddb_scripts 的文档）。
     script_path = Path(__file__).parent / "ddb_scripts"
-    for script_file in _sort_ddb_scripts(script_path.glob("*.dos")):
+    if preload_alpha_libs:
+        scripts = _sort_ddb_scripts(script_path.glob("*.dos"))
+        loaded_libs = set(ALPHA_LIB_SCRIPTS)
+    else:
+        scripts = _sort_ddb_scripts(script_path / name for name in CORE_DDB_SCRIPTS)
+        loaded_libs = set()
+    for script_file in scripts:
         session.runFile(script_file)
+    setattr(session, _LOADED_LIBS_ATTR, loaded_libs)
     get_module_logger("ddb_features").info("已注册 qlib 兼容函数到 DolphinDB 会话")
+
+
+def ensure_alpha_libs_loaded(session: ddb.Session, fields) -> None:
+    """按字段引用惰性加载 alpha 因子库（每会话每库仅加载一次）。
+
+    以大小写不敏感的前缀匹配（gtjaAlpha/qlib158Alpha/WQAlpha）扫描原始
+    字段文本；命中且未加载时 ``runFile`` 对应脚本并在会话上打标记。
+
+    :param session: DolphinDB 会话实例
+    :param fields: 原始字段（str/list/dict 均可，转文本扫描）
+    """
+    loaded = getattr(session, _LOADED_LIBS_ATTR, None)
+    if loaded is None:
+        loaded = set()
+        setattr(session, _LOADED_LIBS_ATTR, loaded)
+    if loaded >= set(ALPHA_LIB_SCRIPTS):
+        return
+    text = str(fields).lower()
+    script_path = Path(__file__).parent / "ddb_scripts"
+    for prefix, script_name in ALPHA_LIB_SCRIPTS.items():
+        if prefix in loaded or prefix not in text:
+            continue
+        session.runFile(script_path / script_name)
+        loaded.add(prefix)
+        get_module_logger("ddb_features").info(f"已按需加载 alpha 因子库 {script_name}")
+
+
+def _load_all_alpha_libs(session: ddb.Session) -> None:
+    """加载全部尚未加载的 alpha 因子库（未识别函数兜底重试用）。"""
+    loaded = getattr(session, _LOADED_LIBS_ATTR, None)
+    if loaded is None:
+        loaded = set()
+        setattr(session, _LOADED_LIBS_ATTR, loaded)
+    script_path = Path(__file__).parent / "ddb_scripts"
+    for prefix, script_name in ALPHA_LIB_SCRIPTS.items():
+        if prefix not in loaded:
+            session.runFile(script_path / script_name)
+            loaded.add(prefix)
 
 
 ##################################################################################################################
@@ -312,6 +389,9 @@ def fetch_features_from_ddb(
     if not instruments:
         return pd.DataFrame()
 
+    # 字段若引用 alpha 因子库函数，按需加载对应 .dos（每会话仅一次）
+    ensure_alpha_libs_loaded(session, fields)
+
     if is_pure_fields:
         data = _fetch_pure_fields(
             session, instruments, base_fields, db_name, table_name, start_time, end_time
@@ -433,9 +513,7 @@ def _compute_expressions(
     ddb_expr = f"""
     FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}")
     """
-    try:
-        data: Dict[str, List] = session.run(ddb_expr)
-    except Exception as e:
+    def _log_failure() -> None:
         # 记录排查上下文；instruments 可能上千个，只记数量与头部样本
         inst_list = list(instruments)
         get_module_logger("ddb_features").error(
@@ -444,7 +522,21 @@ def _compute_expressions(
             f"instruments 共{len(inst_list)}个(头部样本: {inst_list[:5]}), "
             f"expressions={normalized_expr}, baseFields={base_fields}"
         )
-        raise RuntimeError(f"DolphinDB 因子计算失败: {e}") from e
+
+    try:
+        data: Dict[str, List] = session.run(ddb_expr)
+    except Exception as e:
+        # 惰性加载兜底：未识别函数可能是绕过字段扫描调用的 alpha 函数，
+        # 全量加载 alpha 库后重试一次
+        if "Cannot recognize the token" not in str(e):
+            _log_failure()
+            raise RuntimeError(f"DolphinDB 因子计算失败: {e}") from e
+        _load_all_alpha_libs(session)
+        try:
+            data: Dict[str, List] = session.run(ddb_expr)
+        except Exception as retry_e:
+            _log_failure()
+            raise RuntimeError(f"DolphinDB 因子计算失败: {retry_e}") from retry_e
 
     if not data:
         return None

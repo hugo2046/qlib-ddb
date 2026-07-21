@@ -154,6 +154,38 @@ class TestComputedBranch:
         assert ("SZ000001", DATES[2]) in df.index
         assert len(df) == 5
 
+    def test_unrecognized_token_triggers_alpha_retry(self):
+        """D5 兜底：未识别函数错误时全量加载 alpha 库并重试一次。"""
+        calls = {"n": 0}
+
+        def _fe(script):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("Syntax Error: Cannot recognize the token gtjaAlpha3")
+            return _fe_response(script)
+
+        session = RecordingSession(
+            calendar=CAL, run_responses=[(r"FeatureEngineeringByDate", _fe)]
+        )
+        df = fetch_features_from_ddb(session, CODES, self.FIELDS, START, END, "day")
+        assert not df.empty
+        loaded = {str(f).rsplit("/", 1)[-1] for f in session.run_files}
+        assert {"gtja191Alpha.dos", "qlib158Alpha.dos", "wq101alpha.dos"} <= loaded
+        assert calls["n"] == 2
+
+    def test_non_token_error_does_not_retry(self):
+        """非未识别函数错误：不重试、保留 RuntimeError 语义与异常链。"""
+
+        def _fe(script):
+            raise RuntimeError("Server response: out of memory")
+
+        session = RecordingSession(
+            calendar=CAL, run_responses=[(r"FeatureEngineeringByDate", _fe)]
+        )
+        with pytest.raises(RuntimeError, match="DolphinDB 因子计算失败"):
+            fetch_features_from_ddb(session, CODES, self.FIELDS, START, END, "day")
+        assert session.run_files == []  # 未触发兜底加载
+
     def test_empty_result_dict_returns_empty(self):
         session = RecordingSession(
             calendar=CAL,
