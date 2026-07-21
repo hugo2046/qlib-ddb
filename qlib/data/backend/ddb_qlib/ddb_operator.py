@@ -11,8 +11,11 @@ from typing import Dict, List, Optional, Tuple, Union
 import dolphindb as ddb
 import pandas as pd
 
+from ....log import get_module_logger
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .schemas import QlibTableSchema, TableSchema
+
+logger = get_module_logger("ddb_operator")
 
 
 class DDBTableOperator:
@@ -309,7 +312,7 @@ def create_table(
         engine=engine,
         primary_key=primary_key,
     )
-    print(f"{db_name}/{table_name}生成创建完毕!")
+    logger.info(f"{db_name}/{table_name}生成创建完毕!")
 
 
 def create_qlib_table(uri: str, schema: TableSchema) -> None:

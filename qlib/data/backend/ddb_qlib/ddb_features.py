@@ -382,12 +382,15 @@ def fetch_features_from_ddb(
         try:
             data: Dict[str, List] = session.run(ddb_expr)
         except Exception as e:
-            print(f"instruments:{instruments}")
-            print(f"db_name:{db_name},table_name:{table_name}")
-            print(f"start_time:{start_time},end_time:{end_time}")
-            print(f"expressions:{normalized_expr}")
-            print(f"baseFields:{base_fields}")
-            raise RuntimeError(f"DolphinDB 因子计算失败: {e}")
+            # 记录排查上下文；instruments 可能上千个，只记数量与头部样本
+            inst_list = list(instruments)
+            get_module_logger("ddb_features").error(
+                f"DolphinDB 因子计算失败: db={db_name}/{table_name}, "
+                f"时间范围={start_time}~{end_time}, "
+                f"instruments 共{len(inst_list)}个(头部样本: {inst_list[:5]}), "
+                f"expressions={normalized_expr}, baseFields={base_fields}"
+            )
+            raise RuntimeError(f"DolphinDB 因子计算失败: {e}") from e
         # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
         # 避免 pd.concat({}) 报 "No objects to concatenate"
         if not data:

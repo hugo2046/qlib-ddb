@@ -758,7 +758,7 @@ class DolphinDBDataLoader(SQLDataLoader):
         except Exception as e:
             if "does not exist" in str(e):
                 raise ValueError(str(e))
-            raise RuntimeError(f"Failed to validate table existence: {e}")
+            raise RuntimeError(f"Failed to validate table existence: {e}") from e
 
     def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
         """
@@ -963,7 +963,7 @@ class DolphinDBDataLoader(SQLDataLoader):
                 return self._load_from_mysql_bridge(select, where, groupBy, having)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to load data: {e}")
+            raise RuntimeError(f"Failed to load data: {e}") from e
 
     def _load_from_dolphindb(
         self,
