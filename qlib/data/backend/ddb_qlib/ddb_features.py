@@ -317,13 +317,14 @@ def fetch_features_from_ddb(
             session, instruments, base_fields, db_name, table_name, start_time, end_time
         )
     else:
-        data = _compute_expressions(
+        raw = _compute_expressions(
             session, instruments, normalized_expr, base_fields, db_name, table_name, start_time, end_time
         )
         # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
         # 避免 pd.concat({}) 报 "No objects to concatenate"
-        if data is None:
+        if raw is None:
             return pd.DataFrame()
+        data = _computed_dict_to_panel(raw)
 
     return _format_result_panel(
         data, is_pure_fields, instruments, normalized_expr, alias_to_origin_expr_map
@@ -417,7 +418,7 @@ def _compute_expressions(
     dict（报 "filterMap must be a dictionary"）。故此处传键列表全量计算，
     spans 过滤在拿到结果后由 apply_spans_mask 在 Python 侧补齐。
 
-    :return: 以 (alias, date) 为 MultiIndex、codes 为列的 DataFrame；
+    :return: 服务器返回的原始 ``{alias: [值矩阵(dates×codes), 日期, 代码]}``；
         DDB 返回空 dict（baseData 为空的兜底路径）时返回 None
     """
     session.upload(
@@ -447,7 +448,15 @@ def _compute_expressions(
 
     if not data:
         return None
+    return data
 
+
+def _legacy_reshape(data: Dict[str, List]) -> pd.DataFrame:
+    """旧版重塑路径：concat → unstack → stack → swaplevel（多次全景拷贝）。
+
+    仅作为 :func:`_computed_dict_to_panel` 形状不一致时的运行时兜底，
+    并为直构路径的等价性测试提供对照实现。
+    """
     try:
         frames: Dict[str, pd.DataFrame] = {
             k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
@@ -456,7 +465,56 @@ def _compute_expressions(
     except IndexError as e:
         # 可能是data为空
         raise IndexError(f"传入的data数据为空: {e}")
-    return pd.concat(frames)
+    panel: pd.DataFrame = pd.concat(frames)
+    if panel.empty:
+        return panel
+    # 根据 pandas 版本决定 stack 的参数
+    if version.parse(pd.__version__) < version.parse("1.5.0"):
+        # 旧版本 pandas 不支持 future_stack，但支持 dropna=False
+        panel = panel.unstack(level=0).stack(level=0, dropna=False).swaplevel(0, 1)
+    else:
+        # 新版本 pandas 使用 future_stack 或依赖默认行为
+        panel = panel.unstack(level=0).stack(level=0, future_stack=True).swaplevel(0, 1)
+    return panel
+
+
+def _computed_dict_to_panel(data: Dict[str, List]) -> pd.DataFrame:
+    """把 ``{alias: [值矩阵(dates×codes), 日期, 代码]}`` 直构为结果面板。
+
+    ⚠️ 性能关键：旧路径 concat → unstack → stack → swaplevel → sort_index
+    要做约 4 次全景拷贝（5000 股 × 多年 × 30 列时数百 MB 的客户端内存churn）；
+    此处按 (instrument, datetime) 直接一次分配构造。所有 alias 共享同一
+    (dates, codes)（服务器端同一 panel() 产出）；形状不一致（如 DDB 端
+    错误占位返回 TABLE）时回退 :func:`_legacy_reshape` 保持旧语义。
+    """
+    try:
+        aliases = list(data.keys())
+        first = data[aliases[0]]
+        ref_dates = np.asarray(first[1])
+        ref_codes = list(first[2])
+        expected_shape = (len(ref_dates), len(ref_codes))
+        for alias in aliases:
+            values, dates, codes = data[alias][0], data[alias][1], data[alias][2]
+            if np.asarray(values).shape != expected_shape:
+                raise ValueError("值矩阵形状不一致")
+            if not np.array_equal(np.asarray(dates), ref_dates) or list(codes) != ref_codes:
+                raise ValueError("日期/代码轴不一致")
+    except (ValueError, TypeError, IndexError, KeyError, AttributeError):
+        return _legacy_reshape(data)
+
+    dates_index = pd.DatetimeIndex(ref_dates)
+    codes_arr = np.asarray(ref_codes)
+    # 预排序两轴，使输出与旧路径 sort_index() 后的顺序一致
+    date_order = np.argsort(dates_index.values, kind="stable")
+    code_order = np.argsort(codes_arr, kind="stable")
+    index = pd.MultiIndex.from_product(
+        [codes_arr[code_order], dates_index[date_order]], names=["instrument", "datetime"]
+    )
+    columns = {
+        alias: np.asarray(data[alias][0])[np.ix_(date_order, code_order)].T.ravel()
+        for alias in aliases
+    }
+    return pd.DataFrame(columns, index=index)
 
 
 def _format_result_panel(
@@ -470,29 +528,14 @@ def _format_result_panel(
     if not isinstance(data, pd.DataFrame):
         raise ValueError("查询结果不是 DataFrame 格式")
 
-    # 格式化结果
+    # 格式化结果：计算分支已由 _computed_dict_to_panel/_legacy_reshape 产出
+    # (instrument, datetime) 面板；纯字段分支为长表，需 set_index
     if not data.empty:
-        try:
-            if isinstance(data.index, pd.MultiIndex):
-                # 根据 pandas 版本决定 stack 的参数
-                if version.parse(pd.__version__) < version.parse("1.5.0"):
-                    # 旧版本 pandas 不支持 future_stack，但支持 dropna=False
-                    data: pd.DataFrame = (
-                        data.unstack(level=0)
-                        .stack(level=0, dropna=False)
-                        .swaplevel(0, 1)
-                    )
-                else:
-                    # 新版本 pandas 使用 future_stack 或依赖默认行为
-                    data: pd.DataFrame = (
-                        data.unstack(level=0)
-                        .stack(level=0, future_stack=True)
-                        .swaplevel(0, 1)
-                    )
-            else:
+        if not isinstance(data.index, pd.MultiIndex):
+            try:
                 data: pd.DataFrame = data.set_index(["code", "date"])
-        except KeyError:
-            raise KeyError("查询结果缺少 'code' 或 'date' 列")
+            except KeyError:
+                raise KeyError("查询结果缺少 'code' 或 'date' 列")
 
         data.index.names = ["instrument", "datetime"]
 
