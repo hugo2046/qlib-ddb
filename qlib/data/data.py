@@ -9,6 +9,7 @@ import bisect
 import copy
 import queue
 import re
+import threading
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -1626,6 +1627,11 @@ class DolphinDBClientProvider:
         self._connector = DDBClient(config)
         # 创建表操作对象
         self.session = self._connector.session
+        # ⚠️ ddb.Session 非线程安全，且 feature 查询是「run(上传日期)→upload(变量)→run(主查询)」
+        # 的多步会话对话，交错执行会互相覆盖服务器端变量（跨线程数据污染的根因）。
+        # 约定：所有 DBClient.session 的触点必须包在 `with DBClient.session_lock:` 内。
+        # 使用 RLock：storage 读取可能嵌套在 feature 查询持锁期间发生。
+        self.session_lock = threading.RLock()
         register_ddb_functions_to_qlib(self.session)
 
     @property

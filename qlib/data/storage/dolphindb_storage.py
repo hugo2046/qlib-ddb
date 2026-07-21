@@ -56,8 +56,9 @@ class DBStorageMixin:
         return self.db_path, self.table_name
 
     def exists(self, db_path: str, table_name: str) -> bool:
-
-        return DBClient.session.existsTable(db_path, table_name)
+        # ⚠️ 约定：所有 DBClient.session 触点必须持有 session_lock（会话非线程安全）
+        with DBClient.session_lock:
+            return DBClient.session.existsTable(db_path, table_name)
 
     def check(self):
         """check self.uri
@@ -93,9 +94,10 @@ class DBCalendarStorage(DBStorageMixin, CalendarStorage):
         if not self.exists(self.db_path, self.table_name):
             self._write_calendar(values=[])
 
-        df: pd.DataFrame = (
-            DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
-        )
+        with DBClient.session_lock:
+            df: pd.DataFrame = (
+                DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
+            )
         if df.empty:
             return []
 
@@ -176,9 +178,10 @@ class DBInstrumentStorage(DBStorageMixin, InstrumentStorage):
 
         # sql = f"""SELECT * FROM {self.ddb_table}"""
         # df = DolphinDB.run(sql)
-        df: pd.DataFrame = (
-            DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
-        )
+        with DBClient.session_lock:
+            df: pd.DataFrame = (
+                DBClient.session.loadTable(self.table_name, self.db_path).select("*").toDF()
+            )
         for row in df.itertuples(index=False):
             _instruments.setdefault(row[0], []).append((row[1], row[2]))
 
@@ -257,14 +260,17 @@ class DBFeatureStorage(DBStorageMixin, FeatureStorage):
         else:
             raise TypeError(f"不支持的索引类型: type(i) = {type(i)}")
 
-        df: pd.DataFrame = fetch_features_from_ddb(
-            DBClient.session,
-            self.instrument,
-            self.field,
-            start_time,
-            end_time,
-            self.freq
-            )
+        # ⚠️ 整个 fetch 是「run→upload→run」的多步会话对话，必须整体持锁，
+        # 否则并发线程会互相覆盖服务器端的 instruments/expressions 变量
+        with DBClient.session_lock:
+            df: pd.DataFrame = fetch_features_from_ddb(
+                DBClient.session,
+                self.instrument,
+                self.field,
+                start_time,
+                end_time,
+                self.freq
+                )
 
         if df.empty:
             return pd.Series(dtype=float)
