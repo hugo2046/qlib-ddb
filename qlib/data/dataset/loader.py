@@ -215,10 +215,16 @@ class QlibDataLoader(DLWParser):
                 ), f"freq(={self.freq}), inst_processors(={self.inst_processors}) cannot be None/empty"
 
     def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
-        # 串行化整个 load 体（含 is_group 两分支与 load_group_df 调用），阻断并发 load
-        # 共享 qlib 数据层时的跨线程数据污染。详见 _load_lock 注释。
-        with QlibDataLoader._load_lock:
-            return super().load(instruments, start_time, end_time)
+        # 跨线程数据污染仅在 DolphinDB 后端出现（单一共享 session + 全局 H 缓存）；
+        # 文件后端本就线程安全，加锁反而是吞吐回归，故锁收窄到 DDB 路径。
+        # DDB 路径在会话级 session_lock（B1）之外保留本 load 级锁，作为全局 H
+        # MemCache 写模式的双保险。详见 _load_lock 注释。
+        from ..data import is_using_dolphindb
+
+        if is_using_dolphindb():
+            with QlibDataLoader._load_lock:
+                return super().load(instruments, start_time, end_time)
+        return super().load(instruments, start_time, end_time)
 
     def load_group_df(
         self,

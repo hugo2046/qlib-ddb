@@ -78,6 +78,28 @@ def test_session_lock_is_reentrant(fake_provider):
         lock.release()
 
 
+def test_load_lock_scoped_to_ddb_backend(monkeypatch):
+    """B2 回归：全局 _load_lock 仅在 DolphinDB 后端持有；文件后端 load 无锁。"""
+    import qlib.data.data as data_mod
+    from qlib.data.dataset.loader import DLWParser, QlibDataLoader
+
+    lock_states: list[bool] = []
+
+    def fake_super_load(self, instruments=None, start_time=None, end_time=None):
+        lock_states.append(QlibDataLoader._load_lock.locked())
+        return pd.DataFrame()
+
+    monkeypatch.setattr(DLWParser, "load", fake_super_load)
+    loader = object.__new__(QlibDataLoader)  # 绕过构造器，load 不依赖实例属性
+
+    monkeypatch.setattr(data_mod, "is_using_dolphindb", lambda: True)
+    loader.load()
+    monkeypatch.setattr(data_mod, "is_using_dolphindb", lambda: False)
+    loader.load()
+
+    assert lock_states == [True, False], "DDB 路径应持锁，文件路径应无锁"
+
+
 def test_provider_exposes_session_lock():
     """真实 DolphinDBClientProvider 必须暴露 session_lock（接口契约）。"""
     import inspect
