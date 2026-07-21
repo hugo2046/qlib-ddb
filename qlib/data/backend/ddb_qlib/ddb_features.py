@@ -58,8 +58,6 @@ OPERATOR_MAPPING: Dict = {
     "Mad": "mmad",
     "Rank": "rolling_rank",
     "Count": "mcount",
-    "Slope": "mslr",
-    "Resi": "mmse",
     "WMA": "mwavg",
     "EMA": "ema",
     "Corr": "mcorr",
@@ -461,85 +459,6 @@ def fetch_features_from_ddb(
     return data
 
 
-# # 用于兼容qlib的表达式
-# def ddb_compute_features(
-#     session,
-#     instruments: Union[List, str],
-#     fields: Union[List, str],
-#     start_time: str,
-#     end_time: str,
-#     db_name: str,
-#     table_name: str,
-#     mr_by_code: bool = False,
-#     column_name: str = "date",
-#     freq: str = "day",
-# ) -> pd.DataFrame:
-#     """
-#     计算DolphinDB中的特征。
-#     --------
-#     因子处理流程与原始qlib差不多类似df.groupby("code").apply(lambda x:expression(x))的模式;
-#     缺点：这种模式在处理横截面表达式时就不行
-
-#     此函数从DolphinDB数据库中检索和计算特定时间范围内的特定特征。
-
-#     :param session: DolphinDB会话对象
-#     :type session: DDB会话对象
-
-#     :param instruments: 代码列表或单个代码字符串（例如股票代码）
-#     :type instruments: Union[List, str]
-
-#     :param fields: 要获取的字段列表或单个字段字符串(Qlib原生表达式)
-#     :type fields: Union[List, str]
-
-#     :param start_time: 数据开始时间
-#     :type start_time: str
-
-#     :param end_time: 数据结束时间
-#     :type end_time: str
-
-#     :param db_name: DolphinDB数据库名称
-#     :type db_name: str
-
-#     :param table_name: DolphinDB表名
-#     :type table_name: str
-
-#     :param mr_by_code: 是否按代码进行MapReduce操作，默认为False。注意：社区版DolphinDB在mr_by_code=True时可能出现OOM问题
-#     :type mr_by_code: bool, optional
-
-#     :param column_name: 时间列的名称，默认为"date"
-#     :type column_name: str, optional
-
-#     :param freq: 数据频率，可选"day"或其他值（如"min"），默认为"day"
-#     :type freq: str, optional
-
-#     :returns: 包含计算特征的DataFrame，按代码和日期排序
-#     :rtype: pd.DataFrame
-#     """
-#     if isinstance(fields, str):
-#         fields = [fields]
-
-#     if isinstance(instruments, str):
-#         instruments = [instruments]
-
-#     fmt: str = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
-#     start_time: pd.Timestamp = pd.to_datetime(start_time).strftime(fmt)
-#     end_time: pd.Timestamp = pd.to_datetime(end_time).strftime(fmt)
-
-#     # 标准化qlib表达
-#     exprs: List[str] = normalize_cache_fields([str(column) for column in fields])
-#     # escape_backslash=True, 后续用于parseExpr解析
-#     # 将qlib表达式转换为DolphinDB表达式
-#     normalized_expr: List[str] = [
-#         adapt_qlib_expr_syntax_for_ddb(column, OPERATOR_MAPPING, True)
-#         for column in exprs
-#     ]
-
-#     # 使用mr_by_code会快很多,但是社区版ddb会出现OOM出现,所有尽量使用mr_by_code=false
-#     return session.run(
-#         f"""FeatureEngineering({instruments},dict({normalized_expr},{exprs}),{start_time},{end_time},"{db_name}","{table_name}",{int(mr_by_code)}$bool,"{column_name}")"""
-#     ).sort_values(["code", "date"])
-
-
 ##############################################################################################################################
 
 
@@ -750,72 +669,6 @@ def construct_ddb_sql_eval(
     return script
 
 
-# def get_query_date_range(
-#     session: ddb.Session, start_dt, end_dt
-# ) -> Tuple[pd.Timestamp, pd.Timestamp]:
-#     """获取查询的日期范围
-
-#     根据提供的开始和结束日期，从日历表中确定实际的查询日期范围。
-#     如果未指定开始或结束日期，则使用日历表中的最早或最晚交易日。
-
-#     :param session: DolphinDB会话对象
-#     :type session: ddb.Session
-#     :param start_dt: 开始日期，可以是以下类型：
-#                     - None：使用日历表中的最早日期
-#                     - int：作为日历表中的索引位置
-#                     - str或pd.Timestamp：具体的日期值
-#     :type start_dt: Union[str, int, pd.Timestamp, None]
-#     :param end_dt: 结束日期，可以是以下类型：
-#                   - None：使用日历表中的最晚日期
-#                   - int：作为日历表中的索引位置
-#                   - str或pd.Timestamp：具体的日期值
-#     :type end_dt: Union[str, int, pd.Timestamp, None]
-
-#     :return: 处理后的开始日期和结束日期，转换为pandas Timestamp格式
-#     :rtype: Tuple[pd.Timestamp, pd.Timestamp]
-#     """
-
-#     db_path: str = f"dfs://{QlibTableSchema.calendar().db_name}"
-#     tb_path: str = QlibTableSchema.calendar().table_name
-
-#     tb: pd.DataFrame = (
-#         session.loadTable(tb_path, db_path)
-#         .select("TRADE_DAYS")
-#         .sort("TRADE_DAYS")
-#         .toDF()
-#     )
-#     dates: pd.DatetimeIndex = pd.to_datetime(tb["TRADE_DAYS"].values).sort_values()
-
-#     if start_dt == None:
-#         start_dt: pd.Timestamp = dates.min()
-
-#     if end_dt == None:
-#         end_dt: pd.Timestamp = dates.max()
-
-#     if isinstance(start_dt, int) or isinstance(end_dt, int):
-
-#         size: int = len(dates)
-#         if end_dt > size:
-#             raise ValueError(f"结束日期超出交易日历范围: {end_dt} > {size}")
-
-#         return dates[start_dt], dates[end_dt]
-
-#     else:
-
-#         start_dt: pd.Timestamp = dates.asof(start_dt)
-#         end_dt: pd.Timestamp = dates.asof(end_dt)
-
-#         # 检查开始日期
-#         if start_dt is np.nan:
-#             raise ValueError(f"开始日期 {start_dt} 不是有效的交易日")
-
-#         # 检查结束日期
-#         if start_dt is np.nan:
-#             raise ValueError(f"结束日期 {end_dt} 不是有效的交易日")
-
-#         return start_dt, end_dt
-
-
 ###################################################################################################################################
 #                                       表达式转换函数
 ###################################################################################################################################
@@ -936,81 +789,3 @@ def adapt_qlib_expr_syntax_for_ddb(
 
     return "".join(result_segments)
 
-
-def extract_fields_from_expressions(expressions, rename_map=None):
-    """
-    从多个表达式中提取所有基础字段变量
-
-    Parameters
-    ----------
-    expressions : str or list
-        表达式或表达式列表，如
-        "gtjaAlpha1($open, $close, $vol);" 或
-        ["$close/$open", "SMA($high, 10)/$low"]
-
-    rename_map : dict, optional
-        字段重命名映射，如 {'vol': 'volume', 'close': 'price_close'}
-
-    Returns
-    -------
-    list
-        所有表达式中提取的去重字段名列表
-    """
-
-    # 确保处理列表和单个字符串的表达式
-    if not isinstance(expressions, (list, tuple)):
-        expressions = [expressions]
-
-    # 正则表达式匹配以$开头的变量名
-    pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)"
-
-    # 存储所有找到的字段
-    all_fields = set()
-
-    # 处理每个表达式
-    for expr in expressions:
-        # 如果是另一个嵌套列表，递归处理
-        if isinstance(expr, (list, tuple)):
-            nested_fields = extract_fields_from_expressions(expr, None)
-            all_fields.update(nested_fields)
-        else:
-            # 提取当前表达式中的字段
-            fields = re.findall(pattern, expr)
-            all_fields.update(fields)
-
-    # 转换成列表并排序，保证结果稳定
-    result = sorted(list(all_fields))
-
-    # 应用重命名映射（如果提供）
-    if rename_map:
-        result = [rename_map.get(field, field) for field in result]
-
-    return result
-
-
-def is_pure_fields_expressions(exprs):
-    """
-    检查表达式列表是否只包含纯字段引用（如$close, $open）
-
-    Parameters:
-    -----------
-    exprs: List[str]
-        表达式列表
-
-    Returns:
-    --------
-    bool
-        如果所有表达式都是纯字段引用则返回True，否则返回False
-    """
-
-    if not isinstance(exprs, (list, tuple)):
-        exprs = [exprs]
-
-    pattern = r"^\$([a-zA-Z_][a-zA-Z0-9_]*)$"
-
-    for expr in exprs:
-        # 检查是否为纯字段引用格式
-        if not re.match(pattern, expr):
-            return False
-
-    return True
