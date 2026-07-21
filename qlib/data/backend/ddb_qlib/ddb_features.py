@@ -510,8 +510,14 @@ def _compute_expressions(
     )
 
     inst_expr = "keys(instruments)" if isinstance(instruments, dict) else "instruments"
+    try:
+        from ....config import C
+
+        days_step = int(C.get("ddb_days_step", 252))
+    except Exception:
+        days_step = 252
     ddb_expr = f"""
-    FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}")
+    FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}",{days_step})
     """
     def _log_failure() -> None:
         # 记录排查上下文；instruments 可能上千个，只记数量与头部样本

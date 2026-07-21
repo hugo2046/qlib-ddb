@@ -742,7 +742,9 @@ class DatasetProvider(abc.ABC):
             return [lst[i:i+n] for i in range(0, len(lst), n)]
 
         column_names:List = [column_names] if isinstance(column_names,str) else column_names
-        split_column_names:List[List[str]] = split_list_by_length(column_names, 30)
+        # 每批字段数可配置（C["ddb_field_chunk_size"]，默认 30）
+        chunk_size: int = int(C.get("ddb_field_chunk_size", 30))
+        split_column_names:List[List[str]] = split_list_by_length(column_names, chunk_size)
         dfs:List[pd.DataFrame] = [ExpressionD.expression(inst, fields, start_time, end_time, freq) for fields in split_column_names]
 
         dfs_filter_empty:List[pd.DataFrame] = [df for df in dfs if isinstance(df, (pd.Series, pd.DataFrame)) and not df.empty]

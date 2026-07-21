@@ -118,6 +118,20 @@ def test_column_chunking_over_30(fake_env):
     assert list(result.columns) == fields
 
 
+def test_chunk_size_configurable(fake_env, monkeypatch):
+    """D7：每批字段数经 C[\"ddb_field_chunk_size\"] 可配置（默认 30）。"""
+    monkeypatch.setitem(data_mod.C, "ddb_field_chunk_size", 10)
+    fields = [f"$f{i}" for i in range(25)]
+    DatasetProvider.ddb_dataset_processor(
+        inst=["SH600000"],
+        column_names=fields,
+        start_time=pd.Timestamp("2024-01-01"),
+        end_time=pd.Timestamp("2024-01-03"),
+        freq="day",
+    )
+    assert [len(c) for c in fake_env.calls] == [10, 10, 5]
+
+
 def test_inst_processors_with_chunking(fake_env):
     """分块 + inst_processors 组合路径：列齐全且处理生效。"""
     fields = [f"$f{i}" for i in range(31)]

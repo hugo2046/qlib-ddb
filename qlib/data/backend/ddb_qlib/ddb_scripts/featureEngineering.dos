@@ -734,8 +734,8 @@ class FeatureEngine{
 
     };
 
-    def fetch(){
-        ds = self.createDSByDate(daysStep=252,dateName=`date,exchange=`XSHG);
+    def fetch(daysStep=252){
+        ds = self.createDSByDate(daysStep=daysStep,dateName=`date,exchange=`XSHG);
         return mr(ds, fetchFeatures{}, , union_dict,parallel=true);
     }
 
@@ -747,9 +747,10 @@ class FeatureEngine{
 // // print(res)
 
 
-def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name){
+// daysStep 为带默认值的尾参：旧调用方（六参形式）行为不变
+def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name,daysStep=252){
     
     engine = FeatureEngine(db_name,table_name,instruments,expressions,baseFields,start_time,end_time)
     
-    return engine.fetch();
+    return engine.fetch(daysStep);
 };
