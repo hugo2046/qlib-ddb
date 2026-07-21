@@ -289,7 +289,6 @@ def fetch_features_from_ddb(
     from .schemas import QlibTableSchema
 
     normalized_expr, base_fields, is_pure_fields, alias_to_origin_expr_map = normalize_fields_to_ddb(fields)
-    # reversed_expr: Dict = {v: k for k, v in normalized_expr.items()}
 
     _freq: str = "daily" if freq == "day" else "min"
     feature_schema: QlibTableSchema = getattr(QlibTableSchema(), f"feature_{_freq}")()
@@ -297,20 +296,8 @@ def fetch_features_from_ddb(
     db_name: str = feature_schema.db_name
     table_name: str = feature_schema.table_name
 
-    # 获取实际查询范围
-    date_utils: TradeDateUtils = TradeDateUtils(session, freq)
-    start_time, end_time = date_utils.get_locate_date(start_time, end_time)
-
-    fmt: str = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
-    start_time: pd.Timestamp = pd.to_datetime(start_time).strftime(fmt)
-    end_time: pd.Timestamp = pd.to_datetime(end_time).strftime(fmt)
-
-    # 上传时间变量
-    upload_dates: str = f"""
-    start_time={start_time};
-    end_time={end_time};
-    """
-    session.run(upload_dates)
+    # 交易日对齐并格式化为 DDB 日期字面量
+    start_time, end_time = _resolve_query_window(session, freq, start_time, end_time)
 
     # 转换为列表格式
     if isinstance(instruments, str):
@@ -322,7 +309,114 @@ def fetch_features_from_ddb(
     if not instruments:
         return pd.DataFrame()
 
-    # 上传变量
+    if is_pure_fields:
+        data = _fetch_pure_fields(
+            session, instruments, base_fields, db_name, table_name, start_time, end_time
+        )
+    else:
+        data = _compute_expressions(
+            session, instruments, normalized_expr, base_fields, db_name, table_name, start_time, end_time
+        )
+        # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
+        # 避免 pd.concat({}) 报 "No objects to concatenate"
+        if data is None:
+            return pd.DataFrame()
+
+    return _format_result_panel(
+        data, is_pure_fields, instruments, normalized_expr, alias_to_origin_expr_map
+    )
+
+
+def _resolve_query_window(
+    session: ddb.Session,
+    freq: str,
+    start_time: Union[pd.Timestamp, int],
+    end_time: Union[pd.Timestamp, int],
+) -> Tuple[str, str]:
+    """按交易日历对齐查询区间，并格式化为 DDB 日期字面量。
+
+    ⚠️ 性能约定：日期以字面量内联进查询脚本，不再单独
+    ``session.run`` 上传 ``start_time``/``end_time`` 服务器变量
+    （曾经每批字段多付一次网络往返）。
+
+    :param session: DolphinDB 会话
+    :param freq: 数据频率（"day" / "min"）
+    :param start_time: 开始时间（时间戳或日历下标）
+    :param end_time: 结束时间（时间戳或日历下标）
+    :return: (开始, 结束) 的 DDB 日期字面量字符串
+    """
+    date_utils: TradeDateUtils = TradeDateUtils(session, freq)
+    start_time, end_time = date_utils.get_locate_date(start_time, end_time)
+
+    fmt: str = "%Y.%m.%d" if freq == "day" else "%Y.%m.%d %H:%M:%S"
+    return (
+        pd.to_datetime(start_time).strftime(fmt),
+        pd.to_datetime(end_time).strftime(fmt),
+    )
+
+
+def _fetch_pure_fields(
+    session: ddb.Session,
+    instruments: Union[List[str], Dict],
+    base_fields: List[str],
+    db_name: str,
+    table_name: str,
+    start_time: str,
+    end_time: str,
+) -> pd.DataFrame:
+    """纯字段分支：单条 SQL 直查特征表（含 spans dict 的 conditionalFilter 过滤）。
+
+    复杂值（instruments）走变量上传、标量日期走字面量内联——参见
+    dolphindb_skill 对「变量上传优于字符串拼接」的建议（doc_7605/doc_5576）。
+    dict（成分股 spans）分支把日期-股票映射与主查询合并为一次 ``session.run``，
+    消除历史上独立的 ``createDateStockMapping`` 往返。
+
+    :return: 长表 DataFrame（columns: code, date, 各基础字段）
+    """
+    session.upload({"instruments": instruments})
+
+    # 基础字段如果缺失则使用0填充
+    select_fields: List[str] = build_field_expr(session, db_name, table_name, base_fields)
+    select_clause: str = ", ".join(["code", "date"] + select_fields)
+
+    if isinstance(instruments, dict):
+        # spans dict：先在 DDB 中创建日期-股票映射，再用 conditionalFilter 过滤（同一脚本内完成）
+        script = f"""
+        codeRangeFilter = createDateStockMapping({start_time},{end_time},instruments);
+        select {select_clause} from loadTable("dfs://{db_name}","{table_name}")
+        where date between pair({start_time},{end_time})
+            and conditionalFilter(code, date, codeRangeFilter)
+        order by date, code
+        """
+    else:
+        script = f"""
+        select {select_clause} from loadTable("dfs://{db_name}","{table_name}")
+        where date between pair({start_time},{end_time}) and code in instruments
+        order by date, code
+        """
+    return session.run(script)
+
+
+def _compute_expressions(
+    session: ddb.Session,
+    instruments: Union[List[str], Dict],
+    normalized_expr: Dict[str, str],
+    base_fields: List[str],
+    db_name: str,
+    table_name: str,
+    start_time: str,
+    end_time: str,
+) -> Union[pd.DataFrame, None]:
+    """计算表达式分支：经 ``FeatureEngineeringByDate``（mr 防 OOM）服务器端计算。
+
+    ⚠️ dict（成分股 spans）时不能把 dict 传给 FeatureEngineeringByDate：
+    其内部经 mr 分布式执行，worker 端还原不了 conditionalFilter 所需的
+    dict（报 "filterMap must be a dictionary"）。故此处传键列表全量计算，
+    spans 过滤在拿到结果后由 apply_spans_mask 在 Python 侧补齐。
+
+    :return: 以 (alias, date) 为 MultiIndex、codes 为列的 DataFrame；
+        DDB 返回空 dict（baseData 为空的兜底路径）时返回 None
+    """
     session.upload(
         {
             "instruments": instruments,
@@ -331,79 +425,45 @@ def fetch_features_from_ddb(
         }
     )
 
-    # 判断是否为纯字段表达式（如$close, $open），如果是则直接查询表
-    if is_pure_fields:
-        # 基础字段如果缺失则使用0填充
-        base_fields: List[str] = build_field_expr(
-            session, db_name, table_name, base_fields
+    inst_expr = "keys(instruments)" if isinstance(instruments, dict) else "instruments"
+    ddb_expr = f"""
+    FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}")
+    """
+    try:
+        data: Dict[str, List] = session.run(ddb_expr)
+    except Exception as e:
+        # 记录排查上下文；instruments 可能上千个，只记数量与头部样本
+        inst_list = list(instruments)
+        get_module_logger("ddb_features").error(
+            f"DolphinDB 因子计算失败: db={db_name}/{table_name}, "
+            f"时间范围={start_time}~{end_time}, "
+            f"instruments 共{len(inst_list)}个(头部样本: {inst_list[:5]}), "
+            f"expressions={normalized_expr}, baseFields={base_fields}"
         )
-        # 创建基础查询语句部分
-        base_query = (
-            session.loadTable(table_name, f"dfs://{db_name}")
-            .select(["code", "date"] + base_fields)
-            .where(f"date between pair({start_time},{end_time})")
-        )
+        raise RuntimeError(f"DolphinDB 因子计算失败: {e}") from e
 
-        # 根据instruments类型选择不同的查询方式
-        if isinstance(instruments, list):
-            # 如果是列表，直接使用in条件过滤
-            data: pd.DataFrame = (
-                base_query.where(f"code in instruments").sort(["date", "code"]).toDF()
-            )
+    if not data:
+        return None
 
-        elif isinstance(instruments, dict):
-            # 如果是字典，使用conditionalFilter进行复杂的日期-股票映射过滤
-            # 先在DolphinDB中创建日期-股票映射,用以兼容spans
-            session.run(
-                "codeRangeFilter = createDateStockMapping(start_time,end_time,instruments)"
-            )
+    try:
+        frames: Dict[str, pd.DataFrame] = {
+            k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
+            for k, v in data.items()
+        }
+    except IndexError as e:
+        # 可能是data为空
+        raise IndexError(f"传入的data数据为空: {e}")
+    return pd.concat(frames)
 
-            # 使用conditionalFilter应用复杂过滤条件
-            data: pd.DataFrame = (
-                base_query.where("conditionalFilter(code, date, codeRangeFilter)")
-                .sort(["date", "code"])
-                .toDF()
-            )
 
-    else:
-
-        # 使用mr防止因子计算时OOM
-        # ⚠️ dict（成分股 spans）时不能把 dict 传给 FeatureEngineeringByDate：
-        # 其内部经 mr 分布式执行，worker 端还原不了 conditionalFilter 所需的
-        # dict（报 "filterMap must be a dictionary"）。故此处传键列表全量计算，
-        # spans 过滤在拿到结果后由 apply_spans_mask 在 Python 侧补齐。
-        inst_expr = "keys(instruments)" if isinstance(instruments, dict) else "instruments"
-        ddb_expr = f"""
-        FeatureEngineeringByDate({inst_expr},expressions,baseFields,start_time,end_time,"{db_name}","{table_name}")
-        """
-        # data: pd.DataFrame = session.run(ddb_expr)
-        try:
-            data: Dict[str, List] = session.run(ddb_expr)
-        except Exception as e:
-            # 记录排查上下文；instruments 可能上千个，只记数量与头部样本
-            inst_list = list(instruments)
-            get_module_logger("ddb_features").error(
-                f"DolphinDB 因子计算失败: db={db_name}/{table_name}, "
-                f"时间范围={start_time}~{end_time}, "
-                f"instruments 共{len(inst_list)}个(头部样本: {inst_list[:5]}), "
-                f"expressions={normalized_expr}, baseFields={base_fields}"
-            )
-            raise RuntimeError(f"DolphinDB 因子计算失败: {e}") from e
-        # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
-        # 避免 pd.concat({}) 报 "No objects to concatenate"
-        if not data:
-            return pd.DataFrame()
-
-        try:
-            data: Dict[str, pd.DataFrame] = {
-                k: pd.DataFrame(data=v[0], index=v[1], columns=v[2])
-                for k, v in data.items()
-            }
-        except IndexError as e:
-            # 可能是data为空
-            raise IndexError(f"传入的data数据为空: {e}")
-        data: pd.DataFrame = pd.concat(data)
-
+def _format_result_panel(
+    data: pd.DataFrame,
+    is_pure_fields: bool,
+    instruments: Union[List[str], Dict],
+    normalized_expr: Dict[str, str],
+    alias_to_origin_expr_map: Dict[str, str],
+) -> pd.DataFrame:
+    """把查询结果整形为 (instrument, datetime) MultiIndex 面板并恢复输出列名。"""
     if not isinstance(data, pd.DataFrame):
         raise ValueError("查询结果不是 DataFrame 格式")
 
@@ -443,20 +503,16 @@ def fetch_features_from_ddb(
     if isinstance(instruments, dict):
         data = apply_spans_mask(data, instruments)
     # 重命名columns将$改为去掉$或根据已有的字典进行重命名
-    try:
-        aliases_order = list(normalized_expr.values())
-        # 只保留实际存在的 alias，避免 reindex 新增空列
-        ordered_aliases = [c for c in aliases_order if c in data.columns]
-        # 若希望严格要求所有列必须存在，可以改为：
-        # missing = [c for c in aliases_order if c not in data.columns]; if missing: raise KeyError(...)
-        data = data.reindex(columns=ordered_aliases)
-    except Exception as e:
-        # 出错则保持原始列顺序
-        raise e
+    aliases_order = list(normalized_expr.values())
+    # 只保留实际存在的 alias，避免 reindex 新增空列
+    ordered_aliases = [c for c in aliases_order if c in data.columns]
+    data = data.reindex(columns=ordered_aliases)
     # 最后再重命名 alias -> 输出列名
     data = data.rename(columns=alias_to_origin_expr_map)
 
     return data
+
+
 
 
 ##############################################################################################################################

@@ -34,7 +34,7 @@ START, END = "2024-01-01", "2024-01-03"
 FEATURE_KEY = ("dfs://QlibFeaturesDay", "Features")
 
 
-def _pure_table_result(chain: FakeQueryChain) -> pd.DataFrame:
+def _pure_table_result(script: str) -> pd.DataFrame:
     """按查询构造纯字段分支的长表结果（code/date/close/open）。"""
     rows = [
         {"code": c, "date": d, "close": float(i + 1), "open": float((i + 1) * 10)}
@@ -44,10 +44,11 @@ def _pure_table_result(chain: FakeQueryChain) -> pd.DataFrame:
 
 
 def _make_pure_session() -> RecordingSession:
+    # D2 后纯字段分支为单条 SQL 脚本（select ... from loadTable(...)）
     return RecordingSession(
         calendar=CAL,
         table_columns={FEATURE_KEY: ["code", "date", "close", "open", "volume"]},
-        table_results={FEATURE_KEY: _pure_table_result},
+        run_responses=[(r"select .*from loadTable", _pure_table_result)],
     )
 
 
@@ -82,38 +83,41 @@ class TestPureFieldsBranch:
         assert list(df.columns) == ["$close", "$open"]
         assert df.index.names == ["instrument", "datetime"]
         assert len(df) == 6
-        # 查询链：code in instruments 过滤 + date between + 排序
-        chain = session.query_chains[-1]
-        assert any("code in instruments" in w for w in chain.wheres)
-        assert any("date between pair(2024.01.01,2024.01.03)" in w for w in chain.wheres)
-        assert chain.sorts == [["date", "code"]]
-        # 上传的变量含 instruments
-        assert session.uploads[-1]["instruments"] == CODES
+        # 单脚本查询：code in instruments 过滤 + 日期字面量 + 排序
+        script = session.run_scripts[-1]
+        assert "code in instruments" in script
+        assert "date between pair(2024.01.01,2024.01.03)" in script
+        assert "order by date, code" in script
+        # 上传的变量含 instruments（且仅 instruments——纯字段分支不再上传表达式）
+        assert session.uploads[-1] == {"instruments": CODES}
 
     def test_dict_instruments_uses_conditional_filter(self):
         session = _make_pure_session()
         df = fetch_features_from_ddb(session, SPANS, ["$close"], START, END, "day")
 
         assert not df.empty
-        # spans 路径：先建日期-股票映射，再用 conditionalFilter 过滤
-        assert any("createDateStockMapping" in s for s in session.run_scripts)
-        chain = session.query_chains[-1]
-        assert any("conditionalFilter(code, date, codeRangeFilter)" in w for w in chain.wheres)
+        # spans 路径：映射创建与 conditionalFilter 主查询合并在同一脚本（单次往返）
+        script = session.run_scripts[-1]
+        assert "createDateStockMapping(2024.01.01,2024.01.03,instruments)" in script
+        assert "conditionalFilter(code, date, codeRangeFilter)" in script
+        assert session.counts["run"] == 1
 
     def test_missing_base_field_padded_with_zero(self):
         """表中不存在的基础字段用 '0 as 字段' 兜底。"""
         session = RecordingSession(
             calendar=CAL,
             table_columns={FEATURE_KEY: ["code", "date", "close"]},
-            table_results={
-                FEATURE_KEY: lambda chain: pd.DataFrame(
-                    {"code": CODES, "date": [DATES[0]] * 2, "close": [1.0, 2.0], "not_exist": [0, 0]}
+            run_responses=[
+                (
+                    r"select .*from loadTable",
+                    pd.DataFrame(
+                        {"code": CODES, "date": [DATES[0]] * 2, "close": [1.0, 2.0], "not_exist": [0, 0]}
+                    ),
                 )
-            },
+            ],
         )
         fetch_features_from_ddb(session, CODES, ["$close", "$not_exist"], START, END, "day")
-        chain = session.query_chains[-1]
-        assert ["code", "date", "close", "0 as not_exist"] in chain.selects
+        assert "0 as not_exist" in session.run_scripts[-1]
 
 
 class TestComputedBranch:
@@ -170,23 +174,24 @@ class TestEarlyReturns:
 class TestRpcCountBaseline:
     """RPC 往返数基线（优化后按新目标更新本测试）。
 
-    当前实现每次调用：日历全量下载(loadTable) + run(上传日期) +
-    upload(变量) + 主查询。D1（日历缓存）与 D2（往返缩减）落地后应下降。
+    D1（日历缓存）+ D2（往返缩减）后的目标状态：
+    计算分支每批 = 1 upload + 1 run（日历预热后）；
+    纯字段分支 = 1 upload + 1 run + schema 查询（D3 缓存后消失）。
     """
 
     def test_computed_branch_rpc_counts(self):
         session = _make_computed_session()
         fetch_features_from_ddb(session, CODES, ["Ref($close,1)"], START, END, "day")
-        assert session.counts["loadTable"] == 1  # 日历下载（D1 目标: 跨调用共享后为 0）
-        assert session.counts["run"] == 2  # 上传日期 + 主查询（D2 目标: 1）
+        assert session.counts["loadTable"] == 1  # 仅日历首次下载（跨调用共享）
+        assert session.counts["run"] == 1  # 仅主查询（日期已内联为字面量）
         assert session.counts["upload"] == 1
 
     def test_pure_list_branch_rpc_counts(self):
         session = _make_pure_session()
         fetch_features_from_ddb(session, CODES, ["$close"], START, END, "day")
-        # 日历 + build_field_expr schema + 主查询共 3 次 loadTable
-        assert session.counts["loadTable"] == 3
-        assert session.counts["run"] == 1  # 上传日期
+        # 日历首次下载 + build_field_expr schema 共 2 次 loadTable（D3 缓存 schema 后为 1）
+        assert session.counts["loadTable"] == 2
+        assert session.counts["run"] == 1  # 单脚本主查询
         assert session.counts["upload"] == 1
 
     def test_calendar_downloaded_once_across_calls(self):
