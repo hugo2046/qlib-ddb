@@ -776,11 +776,11 @@ class DatasetProvider(abc.ABC):
                 maxtasksperchild=C.maxtasksperchild,
             )(tasks)
 
-            # 合并结果
+            # 合并结果并排序保证确定性，随后落入统一的 cache_to_origin_data 归一化路径
+            # ⚠️ 此处不能提前 return：否则 inst_processors 的处理结果会被丢弃（历史 bug）
             if results:
-                data = pd.concat(results, axis=0)
-            return pd.DataFrame()
-        
+                data = pd.concat(results, axis=0).sort_index()
+
         if not data.empty:
             # column_names,*_ = normalize_fields_to_ddb(column_names)
             # column_names:List[str] = list(column_names.keys())
