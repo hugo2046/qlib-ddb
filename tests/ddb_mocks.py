@@ -90,6 +90,7 @@ class RecordingSession:
         self.run_files: list = []
         self.load_table_calls: list[tuple[str, str]] = []
         self.query_chains: list[FakeQueryChain] = []
+        self.exists_result: bool = True  # existsTable 的返回值（可按测试配置）
 
     # --- SDK 表面 ---
     def run(self, script: str):
@@ -110,7 +111,7 @@ class RecordingSession:
 
     def existsTable(self, db_path: str, table_name: str) -> bool:
         self.counts["existsTable"] += 1
-        return True
+        return self.exists_result
 
     def loadTable(self, tableName: str = None, dbPath: str = None, **kwargs):
         # 兼容位置参数写法 loadTable(table, db)

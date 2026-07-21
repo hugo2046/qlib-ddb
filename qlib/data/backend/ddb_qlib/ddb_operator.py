@@ -14,6 +14,7 @@ import pandas as pd
 from ....log import get_module_logger
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .schemas import QlibTableSchema, TableSchema
+from .utils import get_table_columns
 
 logger = get_module_logger("ddb_operator")
 
@@ -176,9 +177,8 @@ class DDBTableOperator:
         if not self.exist_table(db_name, table_name):
             raise ValueError(f"{db_path}/{table_name}不存在!")
 
-        table = session.loadTable(table_name, db_path)
-        table_cols = table.schema["name"].tolist()
-    
+        table_cols = get_table_columns(session, db_path, table_name)
+
         # 确保数据列名顺序与表列名顺序一致
         data = data.reindex(columns=table_cols)
 
@@ -216,8 +216,7 @@ class DDBTableOperator:
         if not self.exist_table(db_name, table_name):
             raise ValueError(f"表 {db_path}/{table_name} 不存在!")
 
-        table = session.loadTable(table_name, db_path)
-        table_cols = table.schema["name"].tolist()
+        table_cols = get_table_columns(session, db_path, table_name)
 
         # 确保数据列名顺序与表列名顺序一致
         data = data.reindex(columns=table_cols)

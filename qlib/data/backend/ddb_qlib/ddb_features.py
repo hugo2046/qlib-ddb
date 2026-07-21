@@ -7,6 +7,7 @@ Description:
 """
 
 import bisect
+import functools
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Union
@@ -201,8 +202,10 @@ def build_field_expr(
     :return: 字段表达式列表，每个元素为字段名或"0 as 字段名"的表达式。
     :rtype: List[str]
     """
-    tb = session.loadTable(table_name, f"dfs://{db_name}")
-    table_columns: List[str] = tb.schema["name"].tolist()
+    from .utils import get_table_columns
+
+    # 经进程内缓存读取列名（表结构仅随 DDL 变更），预热后 0 RPC
+    table_columns: List[str] = get_table_columns(session, f"dfs://{db_name}", table_name)
 
     return [col if col in table_columns else f"0 as {col}" for col in base_fields]
 
@@ -744,6 +747,29 @@ def construct_ddb_sql_eval(
 ###################################################################################################################################
 def adapt_qlib_expr_syntax_for_ddb(
     expr: str, operator_mapping: Dict = OPERATOR_MAPPING, escape_backslash: bool = False
+) -> str:
+    """
+    将 qlib 表达式转换为 DolphinDB 表达式（默认映射时带 lru_cache 记忆化）。
+
+    翻译是纯函数且实现为 ~100 行递归解析，此前每字段每次 fetch 都重跑；
+    默认 OPERATOR_MAPPING（identity 判断，覆盖全部真实调用方）时经
+    :func:`_adapt_cached` 缓存，自定义映射（dict 不可哈希）则直接解析。
+
+    参数与返回见 :func:`_adapt_qlib_expr_impl`。
+    """
+    if operator_mapping is OPERATOR_MAPPING:
+        return _adapt_cached(expr, escape_backslash)
+    return _adapt_qlib_expr_impl(expr, operator_mapping, escape_backslash)
+
+
+@functools.lru_cache(maxsize=4096)
+def _adapt_cached(expr: str, escape_backslash: bool) -> str:
+    """默认算子映射下的表达式翻译缓存。"""
+    return _adapt_qlib_expr_impl(expr, OPERATOR_MAPPING, escape_backslash)
+
+
+def _adapt_qlib_expr_impl(
+    expr: str, operator_mapping: Dict, escape_backslash: bool = False
 ) -> str:
     """
     将 qlib 表达式转换为 DolphinDB 表达式，支持复杂嵌套结构

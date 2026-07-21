@@ -118,3 +118,28 @@ def validate_sql_identifier(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]+", str(value)):
         raise ValueError(f"参数含非法字符(仅允许字母/数字/./_/-): {value!r}")
     return str(value)
+
+
+# 表列名的进程内缓存：表结构仅随 DDL 变更，写路径经 invalidate_ddb_caches 失效
+_TABLE_COLUMNS_CACHE: Dict[Tuple[str, str], List[str]] = {}
+
+
+def get_table_columns(session, db_path: str, table_name: str) -> List[str]:
+    """带进程内缓存的表列名查询。
+
+    :param session: DolphinDB 会话
+    :param db_path: 数据库路径（含 dfs:// 前缀）
+    :param table_name: 表名
+    :return: 列名列表（副本，调用方可安全修改）
+    """
+    key = (db_path, table_name)
+    cols = _TABLE_COLUMNS_CACHE.get(key)
+    if cols is None:
+        cols = session.loadTable(table_name, db_path).schema["name"].tolist()
+        _TABLE_COLUMNS_CACHE[key] = cols
+    return list(cols)
+
+
+def clear_table_columns_cache() -> None:
+    """清空表列名缓存（DDL/写路径变更后调用）。"""
+    _TABLE_COLUMNS_CACHE.clear()

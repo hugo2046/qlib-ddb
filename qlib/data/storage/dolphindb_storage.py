@@ -55,10 +55,21 @@ class DBStorageMixin:
     def uri(self) -> Tuple[str, str]:
         return self.db_path, self.table_name
 
+    # existsTable 的正向结果缓存：每个存储访问器都会 check()，未缓存时每次
+    # 访问都多付一次 RPC。⚠️ 仅缓存 True——表不存在必须持续报错直到其被创建；
+    # 写路径经 ddb_qlib.invalidate_ddb_caches() 失效。
+    _exists_cache: Dict[Tuple[str, str], bool] = {}
+
     def exists(self, db_path: str, table_name: str) -> bool:
+        key = (db_path, table_name)
+        if self._exists_cache.get(key):
+            return True
         # ⚠️ 约定：所有 DBClient.session 触点必须持有 session_lock（会话非线程安全）
         with DBClient.session_lock:
-            return DBClient.session.existsTable(db_path, table_name)
+            result = bool(DBClient.session.existsTable(db_path, table_name))
+        if result:
+            self._exists_cache[key] = True
+        return result
 
     def check(self):
         """check self.uri
@@ -177,8 +188,15 @@ class DBInstrumentStorage(DBStorageMixin, InstrumentStorage):
         self.table_name: str = market.lower()
 
     def _read_instrument(self) -> Dict[InstKT, InstVT]:
-        
+
         self.check()
+
+        # 经 H["i"] 缓存读取（此前每个访问器调用都全量下载 + 行循环重建 dict）；
+        # 写路径经 ddb_qlib.invalidate_ddb_caches() 失效
+        cache_key = "db_instrument_" + str(self.uri)
+        if cache_key in H["i"]:
+            # 浅拷贝防止调用方修改缓存本体（值 spans 列表按约定只读）
+            return dict(H["i"][cache_key])
 
         _instruments = dict()
 
@@ -191,7 +209,8 @@ class DBInstrumentStorage(DBStorageMixin, InstrumentStorage):
         for row in df.itertuples(index=False):
             _instruments.setdefault(row[0], []).append((row[1], row[2]))
 
-        return _instruments
+        H["i"][cache_key] = _instruments
+        return dict(_instruments)
 
 
     @property

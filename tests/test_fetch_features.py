@@ -15,15 +15,16 @@ import pytest
 
 from ddb_mocks import FakeQueryChain, RecordingSession, make_calendar
 
-from qlib.data.backend.ddb_qlib.ddb_features import TradeDateUtils, fetch_features_from_ddb
+from qlib.data.backend.ddb_qlib import invalidate_ddb_caches
+from qlib.data.backend.ddb_qlib.ddb_features import fetch_features_from_ddb
 
 
 @pytest.fixture(autouse=True)
-def _clear_calendar_cache():
-    """D1 引入模块级日历缓存后，每个测试都从干净缓存开始以保证计数确定性。"""
-    TradeDateUtils.clear_cache()
+def _clear_caches():
+    """D1/D3 引入进程内缓存后，每个测试都从干净缓存开始以保证计数确定性。"""
+    invalidate_ddb_caches()
     yield
-    TradeDateUtils.clear_cache()
+    invalidate_ddb_caches()
 
 # 3 个交易日 × 2 只股票的固定小样本
 CAL = make_calendar("2024-01-01", 5)
@@ -189,10 +190,15 @@ class TestRpcCountBaseline:
     def test_pure_list_branch_rpc_counts(self):
         session = _make_pure_session()
         fetch_features_from_ddb(session, CODES, ["$close"], START, END, "day")
-        # 日历首次下载 + build_field_expr schema 共 2 次 loadTable（D3 缓存 schema 后为 1）
+        # 首次调用：日历下载 + build_field_expr schema 共 2 次 loadTable
         assert session.counts["loadTable"] == 2
         assert session.counts["run"] == 1  # 单脚本主查询
         assert session.counts["upload"] == 1
+        # 二次调用：日历与 schema 均命中缓存，仅 1 upload + 1 run
+        fetch_features_from_ddb(session, CODES, ["$close"], START, END, "day")
+        assert session.counts["loadTable"] == 2, "D3 回归：schema/日历缓存未生效"
+        assert session.counts["run"] == 2
+        assert session.counts["upload"] == 2
 
     def test_calendar_downloaded_once_across_calls(self):
         """D1 回归：日历经模块级缓存共享，跨调用只下载一次（曾经每次都下载）。"""
