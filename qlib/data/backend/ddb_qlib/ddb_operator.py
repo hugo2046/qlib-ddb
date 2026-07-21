@@ -361,6 +361,11 @@ def clean_qlib_db(uri: str) -> None:
     
     session.run(expr)
 
+    # 数据库已变更，失效进程内缓存（日历等）
+    from . import invalidate_ddb_caches
+
+    invalidate_ddb_caches()
+
 
 def write_df_to_ddb(
     db_name: str,
@@ -411,6 +416,11 @@ def write_df_to_ddb(
             table_name=table_name,
             data=data,
         )
+
+    # 表数据已变更，失效进程内缓存（日历等）
+    from . import invalidate_ddb_caches
+
+    invalidate_ddb_caches()
         
         
 def import_instruments_csv_to_ddb(

@@ -15,7 +15,15 @@ import pytest
 
 from ddb_mocks import FakeQueryChain, RecordingSession, make_calendar
 
-from qlib.data.backend.ddb_qlib.ddb_features import fetch_features_from_ddb
+from qlib.data.backend.ddb_qlib.ddb_features import TradeDateUtils, fetch_features_from_ddb
+
+
+@pytest.fixture(autouse=True)
+def _clear_calendar_cache():
+    """D1 引入模块级日历缓存后，每个测试都从干净缓存开始以保证计数确定性。"""
+    TradeDateUtils.clear_cache()
+    yield
+    TradeDateUtils.clear_cache()
 
 # 3 个交易日 × 2 只股票的固定小样本
 CAL = make_calendar("2024-01-01", 5)
@@ -181,10 +189,10 @@ class TestRpcCountBaseline:
         assert session.counts["run"] == 1  # 上传日期
         assert session.counts["upload"] == 1
 
-    def test_calendar_downloaded_every_call(self):
-        """D1 回归基线：当前每次调用都重新下载全量日历。"""
+    def test_calendar_downloaded_once_across_calls(self):
+        """D1 回归：日历经模块级缓存共享，跨调用只下载一次（曾经每次都下载）。"""
         session = _make_computed_session()
         fetch_features_from_ddb(session, CODES, ["Ref($close,1)"], START, END, "day")
         fetch_features_from_ddb(session, CODES, ["Ref($close,1)"], START, END, "day")
         calendar_loads = [c for c in session.load_table_calls if c[0] == "dfs://QlibCalendars"]
-        assert len(calendar_loads) == 2  # D1 落地后应为 1
+        assert len(calendar_loads) == 1, "日历缓存失效：跨调用重复全量下载"

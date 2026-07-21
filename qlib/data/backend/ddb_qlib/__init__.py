@@ -24,3 +24,24 @@ from .ddb_features import (
     TradeDateUtils,
     adapt_qlib_expr_syntax_for_ddb,
 )
+
+
+def invalidate_ddb_caches() -> None:
+    """清空 DDB 后端的进程内缓存。
+
+    覆盖范围：
+    - :class:`TradeDateUtils` 的模块级交易日历缓存；
+    - ``H["c"]`` 中 DBCalendarStorage 的原始日历缓存。
+
+    写路径（``write_df_to_ddb`` / CSV 导入 / ``clean_qlib_db``）变更表数据后
+    会自动调用；长驻只读进程若感知到外部写入，也可手动调用本函数。
+    """
+    TradeDateUtils.clear_cache()
+    try:
+        from qlib.data.cache import H
+
+        cal_cache = H["c"]
+        while len(cal_cache):
+            cal_cache.popitem(last=False)
+    except Exception:  # pragma: no cover - 缓存清理失败不应阻断写路径
+        pass

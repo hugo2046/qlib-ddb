@@ -464,18 +464,32 @@ def fetch_features_from_ddb(
 
 class TradeDateUtils:
 
+    # 模块级日历缓存：{(db_path, table_name): (日历数组, 日期->下标索引)}。
+    # ⚠️ 性能关键：fetch_features_from_ddb 每批字段都会构造本类，未缓存时
+    # 每次都全量下载交易日历（Alpha158 一次 D.features ≈ 6 次下载）。
+    # 写路径变更日历表后需调用 ddb_qlib.invalidate_ddb_caches() 失效。
+    _calendar_cache: Dict[Tuple[str, str], Tuple[np.ndarray, Dict]] = {}
+
     def __init__(self, session: ddb.Session, freq: str):
         db_path: str = f"dfs://{QlibTableSchema.calendar().db_name}"
         tb_path: str = QlibTableSchema.calendar().table_name
-        self._calendar: np.ndarray = (
-            session.loadTable(tb_path, db_path)
-            .exec("TRADE_DAYS")
-            .sort("TRADE_DAYS")
-            .toDF()
-        )
-        self._calendar_index: Dict = dict(
-            zip(self._calendar, np.arange(len(self._calendar)))
-        )
+        cache_key: Tuple[str, str] = (db_path, tb_path)
+        cached = self._calendar_cache.get(cache_key)
+        if cached is None:
+            calendar: np.ndarray = (
+                session.loadTable(tb_path, db_path)
+                .exec("TRADE_DAYS")
+                .sort("TRADE_DAYS")
+                .toDF()
+            )
+            cached = (calendar, dict(zip(calendar, np.arange(len(calendar)))))
+            self._calendar_cache[cache_key] = cached
+        self._calendar, self._calendar_index = cached
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """清空模块级日历缓存（日历表数据变更后调用）。"""
+        cls._calendar_cache.clear()
 
     def get_locate_date_by_idx(
         self, start_idx: int, end_idx: int
