@@ -16,7 +16,7 @@ from ....log import get_module_logger
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .ddb_operator import DDBTableOperator
 from .schemas import QlibTableSchema, FIELDS_MAPPING
-from .utils import convert_wind_date_to_datetime
+from .utils import convert_wind_date_to_datetime, validate_date_str, validate_sql_identifier
 
 logger = get_module_logger("ddb_mysql_bridge")
 
@@ -328,7 +328,8 @@ class QlibDDBMySQLInitializer:
         :param exchange_market: 交易所市场，默认为"SSE"
         :type exchange_market: str
         """
-        where_clause = f"S_INFO_EXCHMARKET='{exchange_market}'"
+        # 防注入：交易所参数将拼入 SQL，先做白名单校验
+        where_clause = f"S_INFO_EXCHMARKET='{validate_sql_identifier(exchange_market)}'"
         self._sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", where_clause)
     
     def sync_feature_daily(self, start_date: str = "20100101", end_date: str = "20241231"):
@@ -340,7 +341,8 @@ class QlibDDBMySQLInitializer:
         :param end_date: 结束日期，格式：YYYYMMDD
         :type end_date: str
         """
-        where_clause = f"TRADE_DT BETWEEN {start_date} AND {end_date}"
+        # 防注入：日期参数将拼入 SQL，先做格式校验
+        where_clause = f"TRADE_DT BETWEEN {validate_date_str(start_date)} AND {validate_date_str(end_date)}"
         self._sync_table(QlibTableSchema.feature_daily, "ASHAREEODPRICES", where_clause)
     
     def sync_index_daily(self, index_codes: List[str], start_date: str = "20100101", end_date: str = "20241231"):
@@ -363,6 +365,11 @@ class QlibDDBMySQLInitializer:
         
         if not index_codes:
             raise ValueError("index_codes不能为空")
+
+        # 防注入：指数代码与日期将拼入 SQL，先做白名单/格式校验
+        index_codes = [validate_sql_identifier(code) for code in index_codes]
+        start_date = validate_date_str(start_date)
+        end_date = validate_date_str(end_date)
         
         # 构建WHERE条件
         if len(index_codes) == 1:
