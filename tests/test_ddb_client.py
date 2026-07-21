@@ -107,6 +107,18 @@ def test_close_closes_session_and_pool(fake_ddb):
     assert client.session.closed is True
 
 
+def test_provider_pool_is_lazy(fake_ddb, monkeypatch):
+    """回归：DolphinDBClientProvider 曾在 init 时急切创建 4 连接的池（无人使用）。"""
+    import qlib.data.backend.ddb_qlib as ddb_pkg
+    from qlib.data.data import DolphinDBClientProvider
+
+    monkeypatch.setattr(ddb_pkg, "register_ddb_functions_to_qlib", lambda session: None)
+    provider = DolphinDBClientProvider(uri="dolphindb://admin:pwd@127.0.0.1:8848")
+    assert fake_ddb.instances == [], "provider 初始化不应创建连接池"
+    _ = provider.pool
+    assert len(fake_ddb.instances) == 1, "首次访问 pool 才创建连接池"
+
+
 def test_dead_write_methods_removed(fake_ddb):
     """守卫：死代码 tableAppender/tableUpsert 不应被重新引入（正确实现在 DDBTableOperator）。"""
     client = _make_client()

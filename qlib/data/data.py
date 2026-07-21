@@ -1623,12 +1623,19 @@ class DolphinDBClientProvider:
         # 初始化连接
         config = DDBConnectionSpec(uri=self.uri)
         # 创建连接管理器
-        connector = DDBClient(config)
+        self._connector = DDBClient(config)
         # 创建表操作对象
-        self.session = connector.session
-        # 创建连接池
-        self.pool = connector.pool
+        self.session = self._connector.session
         register_ddb_functions_to_qlib(self.session)
+
+    @property
+    def pool(self):
+        """惰性获取连接池。
+
+        ⚠️ 不在 __init__ 中急切创建：连接池会向服务器开 4 条连接，
+        每条都占服务器内存（社区版 2 核/8GB），且读路径并不使用连接池。
+        """
+        return self._connector.pool
 
 
 import sys
