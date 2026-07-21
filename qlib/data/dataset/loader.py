@@ -722,7 +722,10 @@ class DolphinDBDataLoader(SQLDataLoader):
             raise ValueError("db_name cannot be empty")
 
         # Initialize connections and state
+        # ⚠️ 这里持有的是进程级共享的 DBClient.session（storage/feature 路径同用），
+        # 本实例并不拥有它，因此 _owns_session=False，teardown 时不得关闭
         self.session = DBClient.session
+        self._owns_session = False
         self._table_validated = False
         self._mysql_bridge = None  # DolphinDB mode only
 
@@ -1038,7 +1041,9 @@ class DolphinDBDataLoader(SQLDataLoader):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with proper resource cleanup."""
         try:
-            if self.session:
+            # ⚠️ 历史 bug：曾无条件 close 进程级共享 session，破坏其他使用方；
+            # 仅在本实例独占会话（_owns_session=True）时才允许关闭
+            if self._owns_session and self.session:
                 self.session.close()
         except Exception as e:
             warnings.warn(f"Error closing DolphinDB session: {e}")
@@ -1047,7 +1052,7 @@ class DolphinDBDataLoader(SQLDataLoader):
     def __del__(self):
         """Destructor for cleanup."""
         try:
-            if hasattr(self, "session") and self.session:
+            if getattr(self, "_owns_session", False) and getattr(self, "session", None):
                 self.session.close()
         except Exception:
             pass  # Ignore cleanup errors in destructor
