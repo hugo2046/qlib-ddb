@@ -106,9 +106,10 @@ class DDBMySQLBridge:
 
     def load_mysql_plugin(self) -> None:
         """在dolphinDB中加载MySQL插件"""
+        # ⚠️ 历史 bug：此处曾误装 "lgbm" 插件，导致 mysql::connect 必然失败
         expr: str = """
-        installPlugin("lgbm")
-        loadPlugin("lgbm")
+        installPlugin("mysql")
+        loadPlugin("mysql")
         """
         self.ddb_session.run(expr)
 
