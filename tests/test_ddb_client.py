@@ -119,6 +119,51 @@ def test_provider_pool_is_lazy(fake_ddb, monkeypatch):
     assert len(fake_ddb.instances) == 1, "首次访问 pool 才创建连接池"
 
 
+def test_get_shared_client_reuses_per_uri(fake_ddb):
+    """D6：同 URI 复用共享客户端，不同 URI 各自独立。"""
+    from qlib.data.backend.ddb_qlib import ddb_operator as op
+
+    op._shared_clients.clear()
+    a = op.get_shared_client("dolphindb://admin:pwd@10.0.0.1:8848")
+    b = op.get_shared_client("dolphindb://admin:pwd@10.0.0.1:8848")
+    c = op.get_shared_client("dolphindb://admin:pwd@10.0.0.2:8848")
+    assert a is b
+    assert a is not c
+    op._shared_clients.clear()
+
+
+def test_write_df_to_ddb_uses_shared_client(fake_ddb, monkeypatch):
+    """D6 回归：write_df_to_ddb 曾每次调用新建 DDBClient（新 TCP 会话）。"""
+    import pandas as pd
+
+    from qlib.data.backend.ddb_qlib import ddb_operator as op
+
+    op._shared_clients.clear()
+    clients_used = []
+
+    class _FakeOperator:
+        def __init__(self, client):
+            clients_used.append(client)
+
+        def table_appender(self, **kwargs):
+            pass
+
+        def table_upsert(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(op, "DDBTableOperator", _FakeOperator)
+    uri = "dolphindb://admin:pwd@10.0.0.3:8848"
+    op.write_df_to_ddb("db", "tb", pd.DataFrame({"a": [1]}), uri=uri)
+    op.write_df_to_ddb("db", "tb", pd.DataFrame({"a": [1]}), uri=uri)
+    assert len(clients_used) == 2
+    assert clients_used[0] is clients_used[1], "同 URI 的两次写入应复用同一客户端"
+    # 显式传 client 时优先使用
+    explicit = _make_client("dolphindb://admin:pwd@10.0.0.4:8848")
+    op.write_df_to_ddb("db", "tb", pd.DataFrame({"a": [1]}), uri=None, client=explicit)
+    assert clients_used[-1] is explicit
+    op._shared_clients.clear()
+
+
 def test_dead_write_methods_removed(fake_ddb):
     """守卫：死代码 tableAppender/tableUpsert 不应被重新引入（正确实现在 DDBTableOperator）。"""
     client = _make_client()
