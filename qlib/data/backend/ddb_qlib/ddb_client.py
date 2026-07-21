@@ -1,17 +1,18 @@
 """
 Author: hugo2046 shen.lan123@gmail.com
 Date: 2025-02-19 14:29:41
-LastEditors: hugo2046 shen.lan123@gmail.com
-LastEditTime: 2025-04-17 16:02:46
 Description: 用于连接ddb
 """
 
-from typing import List, Optional, Union
-from urllib.parse import unquote, urlparse
+import threading
 
 import dolphindb as ddb
-import pandas as pd
 from pydantic import BaseModel, field_validator
+from urllib.parse import unquote, urlparse
+
+from ....log import get_module_logger
+
+logger = get_module_logger("ddb_client")
 
 
 class DDBConnectionSpec(BaseModel):
@@ -31,13 +32,21 @@ class DDBConnectionSpec(BaseModel):
 
 
 class DDBClient:
-    
-    _pool_instance = None  # 类变量用于存储连接池实例
+    """DolphinDB 连接客户端：持有一个会话与一个惰性创建的连接池。
 
-    
+    - 会话在构造时建立（reconnect=True 提供断线重连）。
+    - 连接池为实例属性且惰性创建：目标服务器为社区版（2 核/8GB）时，
+      每条连接都占用服务器内存，只有真正用到时才创建。
+
+    :param config: 连接配置（含 dolphindb:// URI）
+    """
+
     def __init__(self, config: DDBConnectionSpec):
         self._config = config
         self._session = self._create_session()
+        # ⚠️ 连接池必须是实例属性：类变量会导致连接不同服务器的多个客户端共享同一个池
+        self._pool_instance: ddb.DBConnectionPool | None = None
+        self._pool_lock = threading.Lock()
 
     def _parse_uri(self) -> tuple[str, str, str, int]:
         """解析连接参数"""
@@ -60,7 +69,7 @@ class DDBClient:
         session.connect(host=host, port=port, userid=user, password=pwd, reconnect=True)
         return session
 
-    def _create_pool(self,threadNum:int=4) -> ddb.DBConnectionPool:
+    def _create_pool(self, threadNum: int = 4) -> ddb.DBConnectionPool:
         """创建连接池"""
         user, pwd, host, port = self._parse_uri()
         return ddb.DBConnectionPool(
@@ -80,126 +89,31 @@ class DDBClient:
 
     @property
     def pool(self) -> ddb.DBConnectionPool:
-        """直接获取连接池对象"""
+        """惰性获取连接池对象（线程安全的双重检查）"""
         if self._pool_instance is None:
-            self._pool_instance = self._create_pool()
+            with self._pool_lock:
+                if self._pool_instance is None:
+                    self._pool_instance = self._create_pool()
         return self._pool_instance
-    
-    
-    @classmethod
-    def close_pool(cls):
-        """关闭并清理连接池"""
-        if cls._pool_instance is not None:
-            with cls._pool_lock:
-                if cls._pool_instance is not None:
-                    try:
-                        cls._pool_instance.shutDown()
-                    except:
-                        pass
-                    cls._pool_instance = None
-                    
-    def tableAppender(self, db_path: str, table_name: str, data: pd.DataFrame) -> None:
+
+    def close_pool(self) -> None:
+        """关闭并清理连接池（未创建过则为空操作）"""
+        with self._pool_lock:
+            if self._pool_instance is not None:
+                try:
+                    self._pool_instance.shutDown()
+                except Exception as e:
+                    logger.warning(f"关闭连接池失败: {e}")
+                self._pool_instance = None
+
+    def close(self) -> None:
+        """显式关闭会话与连接池。
+
+        不提供 __del__：本客户端的会话会被 provider/storage 等多处共享，
+        GC 时机关闭共享会话会破坏其他使用方（见 DolphinDBDataLoader 历史 bug）。
         """
-        将数据追加到指定的表中。
-
-        :param db_path: 数据库路径
-        :type db_path: str
-        :param table_name: 表名
-        :type table_name: str
-        :param data: 要追加的数据
-        :type data: pd.DataFrame
-        :raises ValueError: 如果数据库路径或表名无效
-        """
-        session = self.get_session()
-
-        if not session.existsDatabase(db_path):
-            raise ValueError(f"{db_path} is not a valid database")
-
-        if not session.existsTable(db_path, table_name):
-            raise ValueError(f"{table_name} is not a valid table")
-
-        # 获取表的列名
-        table_cols: List[str] = (
-            session.loadTable(table_name, db_path).schema["name"].to_list()
-        )
-        # 数据列名顺序与表列名顺序一致
-        data: pd.DataFrame = data[table_cols]
-
-        appender: ddb.tableAppender = ddb.tableAppender(
-            tableName=table_name,
-            ddbSession=session,
-            dbPath=db_path,
-        )
-
-        appender.append(data)
-
-    def tableUpsert(
-        self,
-        db_path: str,
-        table_name: str,
-        data: pd.DataFrame,
-        keyColNames: Optional[Union[str, List]] = None,
-        sortColumns: Optional[Union[str, List]] = None,
-    ) -> None:
-        """
-        将数据帧中的数据插入或更新到指定的数据库表中。
-
-        :param db_path: 数据库路径。
-        :param table_name: 表名。
-        :param data: 包含要插入或更新的数据的数据帧。
-        :param keyColNames: 用于确定唯一记录的列名。默认为None。
-        :param sortColumns: 用于排序的列名。默认为None。
-        :return: 无返回值。
-        """
-        session = self.get_session()
-
-        if not session.existsDatabase(db_path):
-            raise ValueError(f"{db_path} is not a valid database")
-
-        if not session.existsTable(db_path, table_name):
-            raise ValueError(f"{table_name} is not a valid table")
-
-        # 获取表的列名
-        table_cols: List[str] = (
-            session.loadTable(table_name, db_path).schema["name"].to_list()
-        )
-     
-        # 数据列名顺序与表列名顺序一致
-        data: pd.DataFrame = data[table_cols]
-
-        if keyColNames is None:
-            keyColNames: List = []
-
-        if sortColumns is None:
-            sortColumns: List = []
-
-        upserter: ddb.tableUpsert = ddb.tableUpsert(
-            tableName=table_name,
-            ddbSession=session,
-            dbPath=db_path,
-            keyColNames=keyColNames,
-            sortColumns=sortColumns,
-        )
-        upserter.upsert(data)
-    
-    # def __del__(self):
-    #     """析构函数，确保资源正确释放"""
-    #     try:
-    #         if hasattr(self, '_session') and self._session:
-    #             self._session.close()
-    #     except:
-    #         pass
-
-if __name__ == "__main__":
-
-    uri: str = "dolphindb://admin:123456@114.80.110.170:28848"
-
-    # 测试python端安装ddb插件
-    config = DDBConnectionSpec(uri=uri)
-    connector = DDBClient(config)
-
-    # expr:str = """
-    # installPlugin("lgbm")
-    # loadPlugin("lgbm")
-    # """
-    # connector.session.run(expr)
+        self.close_pool()
+        try:
+            self._session.close()
+        except Exception as e:
+            logger.warning(f"关闭会话失败: {e}")

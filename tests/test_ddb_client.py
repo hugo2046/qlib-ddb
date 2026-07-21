@@ -1,0 +1,115 @@
+"""DDBClient 连接池生命周期的离线单元测试（不依赖 DolphinDB 服务器）。
+
+历史 bug 回归：
+1. ``_pool_instance`` 曾是类变量——连接不同服务器的多个客户端会共享同一个池；
+2. ``close_pool`` 曾引用不存在的 ``cls._pool_lock``（AttributeError 被裸 except 吞掉），
+   且读取的类变量永远是 None，实际从未关闭过任何池；
+3. ``tableAppender``/``tableUpsert`` 调用不存在的 ``self.get_session()``，属死代码，已删除。
+"""
+
+import pytest
+
+from qlib.data.backend.ddb_qlib import ddb_client as ddb_client_mod
+from qlib.data.backend.ddb_qlib.ddb_client import DDBClient, DDBConnectionSpec
+
+
+class _FakeSession:
+    """记录 connect/close 调用的假会话。"""
+
+    def __init__(self, *args, **kwargs):
+        self.connect_calls = []
+        self.closed = False
+
+    def connect(self, **kwargs):
+        self.connect_calls.append(kwargs)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePool:
+    """记录构造参数与 shutDown 调用的假连接池。"""
+
+    instances: list["_FakePool"] = []
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.shutdown_called = 0
+        _FakePool.instances.append(self)
+
+    def shutDown(self):
+        self.shutdown_called += 1
+
+
+@pytest.fixture()
+def fake_ddb(monkeypatch):
+    """把 ddb_client 模块内的 dolphindb SDK 替换为假实现。"""
+    _FakePool.instances = []
+    monkeypatch.setattr(ddb_client_mod.ddb, "session", _FakeSession)
+    monkeypatch.setattr(ddb_client_mod.ddb, "DBConnectionPool", _FakePool)
+
+    class _FakeSettings:
+        PROTOCOL_DDB = "ddb"
+
+    monkeypatch.setattr(ddb_client_mod.ddb, "settings", _FakeSettings, raising=False)
+    return _FakePool
+
+
+def _make_client(uri: str = "dolphindb://admin:pwd@127.0.0.1:8848") -> DDBClient:
+    return DDBClient(DDBConnectionSpec(uri=uri))
+
+
+def test_pool_created_lazily_and_once(fake_ddb):
+    client = _make_client()
+    assert fake_ddb.instances == [], "连接池不应在构造时创建"
+    pool_first = client.pool
+    pool_second = client.pool
+    assert pool_first is pool_second
+    assert len(fake_ddb.instances) == 1, "连接池应只创建一次"
+
+
+def test_pool_not_shared_between_clients(fake_ddb):
+    """回归：池曾是类变量，导致不同客户端共享同一个池。"""
+    client_a = _make_client("dolphindb://admin:pwd@10.0.0.1:8848")
+    client_b = _make_client("dolphindb://admin:pwd@10.0.0.2:8848")
+    assert client_a.pool is not client_b.pool
+    assert len(fake_ddb.instances) == 2
+
+
+def test_close_pool_shuts_down_and_resets(fake_ddb):
+    client = _make_client()
+    pool = client.pool
+    client.close_pool()
+    assert pool.shutdown_called == 1
+    # 关闭后再次访问会新建
+    assert client.pool is not pool
+    # 未创建时关闭是空操作，不会新建池
+    created_before = len(fake_ddb.instances)
+    fresh = _make_client()
+    fresh.close_pool()
+    assert len(fake_ddb.instances) == created_before
+
+
+def test_close_pool_swallows_shutdown_error(fake_ddb):
+    client = _make_client()
+    pool = client.pool
+    pool.shutDown = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    client.close_pool()  # 不应抛出
+    assert client._pool_instance is None
+
+
+def test_close_closes_session_and_pool(fake_ddb):
+    client = _make_client()
+    pool = client.pool
+    client.close()
+    assert pool.shutdown_called == 1
+    assert client.session.closed is True
+
+
+def test_dead_write_methods_removed(fake_ddb):
+    """守卫：死代码 tableAppender/tableUpsert 不应被重新引入（正确实现在 DDBTableOperator）。"""
+    client = _make_client()
+    assert not hasattr(client, "tableAppender")
+    assert not hasattr(client, "tableUpsert")
+    assert not hasattr(client, "get_session")
