@@ -2,6 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+> **⚠️ 更新（2026-07-21）:** 本文档描述的是初版设计（仅脱敏密码，主机端口保持可见）。
+> 现行实现已扩展为**公网主机同样脱敏**：公网 IPv4 部分遮蔽（`114.**.**.170`）、
+> 公网 IPv6 遮蔽为 `***`、多标签域名遮蔽中段；内网 IP / localhost 与端口保持可见。
+> 以 `qlib/data/backend/utils.py` 的 `mask_uri()` docstring 为准。
+
 **目标:** 在日志中自动脱敏数据库连接 URI 中的密码，防止敏感信息泄露
 
 **架构:** 创建独立的 URI 脱敏工具函数，在日志输出时调用，不影响实际的数据库连接逻辑。采用正则表达式解析 URI，遵循 SQLAlchemy 行业标准（仅脱敏密码，保留用户名、主机、端口以便调试）。
