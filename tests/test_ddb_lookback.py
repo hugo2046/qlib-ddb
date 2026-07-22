@@ -61,6 +61,22 @@ class TestExpressionExtendedWindow:
         lft, rght = get_expression_extended_window("myCustomOp($close, -3)", 252)
         assert rght == 3
 
+    def test_fallback_ignores_large_scaling_constant(self):
+        """大数值常量（缩放因子）不当窗口，避免误判为百万日回看，退回配置兜底。"""
+        assert get_expression_extended_window(
+            "gtjaAlpha191_005($volume/1000000, $close)", 252
+        ) == (252, 0)
+
+    def test_fallback_window_upper_bound(self):
+        """上界内整数仍视为窗口；超过上界视为常量并退回兜底。"""
+        assert get_expression_extended_window("myCustomOp($close, 2000)", 30)[0] == 2000
+        assert get_expression_extended_window("myCustomOp($close, 2001)", 30)[0] == 30
+
+    def test_fallback_future_ignores_large_constant(self):
+        """未来引用兜底同样忽略超大常量，避免向后外扩到不合理天数。"""
+        _, rght = get_expression_extended_window("myCustomOp($close, -9999999)", 252)
+        assert rght == 0
+
 
 class TestBatchExtendedWindow:
     def test_batch_takes_max(self):

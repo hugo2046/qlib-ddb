@@ -200,6 +200,10 @@ _STANDALONE_INT_PATTERN = re.compile(r"(?<![\w.])(\d+)(?![\w.])")
 # 负数窗口（未来引用，如 Ref($close,-2)）仅以函数参数形式出现，
 # 避免把减法运算（如 "close-1"）误判为未来引用
 _FUTURE_INT_PATTERN = re.compile(r",\s*-(\d+)")
+# 兜底扫描到的整数超过此上界视为普通数值常量（如缩放因子 $volume/1000000），
+# 而非滚动窗口，避免误判成百万日回看导致 shiftTradeDays 外扩到不合理区间。
+# 约 8 年交易日，远超常见滚动窗口（年化 252、双年 504 等）
+_MAX_FALLBACK_WINDOW: int = 2000
 
 
 @functools.lru_cache(maxsize=4096)
@@ -210,7 +214,8 @@ def get_expression_extended_window(expr: str, default_lookback: int) -> Tuple[in
     对齐：优先复用 qlib 算子树的 ``get_extended_window_size``（递归处理
     嵌套算子、双臂算子取 max、以及 ``Ref($close,-2)`` 这类未来引用的向后
     外扩）。qlib 无法实例化的表达式（DDB 专属 alpha 库函数等）退回启发式：
-    正则扫描独立整数字面量当窗口，扫不到时用 ``default_lookback`` 兜底；
+    正则扫描独立整数字面量当窗口（超过 :data:`_MAX_FALLBACK_WINDOW` 的整数
+    视为数值常量而非窗口予以剔除），扫不到时用 ``default_lookback`` 兜底；
     真正非法的表达式仍会在 DDB 端 parseExpr 阶段报错（原有行为）。
 
     :param expr: 原始 qlib 表达式（含 ``$`` 字段引用）
@@ -236,9 +241,18 @@ def get_expression_extended_window(expr: str, default_lookback: int) -> Tuple[in
         lft_etd, rght_etd = instance.get_extended_window_size()
         return int(lft_etd), int(rght_etd)
     except Exception:
-        ints = [int(s) for s in _STANDALONE_INT_PATTERN.findall(expr)]
+        # 剔除超过上界的整数（视为数值常量而非窗口）；剩余最大者为回看窗口
+        ints = [
+            n
+            for n in (int(s) for s in _STANDALONE_INT_PATTERN.findall(expr))
+            if n <= _MAX_FALLBACK_WINDOW
+        ]
         lft_etd = max(ints) if ints else int(default_lookback)
-        futures = [int(s) for s in _FUTURE_INT_PATTERN.findall(expr)]
+        futures = [
+            n
+            for n in (int(s) for s in _FUTURE_INT_PATTERN.findall(expr))
+            if n <= _MAX_FALLBACK_WINDOW
+        ]
         return lft_etd, max(futures) if futures else 0
 
 

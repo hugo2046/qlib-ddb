@@ -476,24 +476,6 @@ def splitDateRangesByTradeDays(start_date, end_date, exchange="XSHG", daysStep=2
 // res_arr = flatten(res)
 
 
-/*
-* 创建空表
-* @return TABLE 空表
-*/
-def createEmptyTable(codes,dates,colNames){
-    
-    totalSize = size(codes)*size(dates);
-    code = take(codes, totalSize);
-    code.sortBy!(false)
-    date = repeat(dates, totalSize);
-    emptyTB = table(date,code);
-    for (colName in colNames){
-        emptyTB[colName] = 0;
-    }
-    reorderColumns!(emptyTB,colNames)
-    return emptyTB;
-};
-
 // 根据频率规范化日期类型
 def normalizeDate(dt,freq){
     if(freq == "D"){
@@ -648,6 +630,21 @@ class FeatureEngine{
     };
 
     /**
+    * 构造 [qStart, qEnd] 区间的 NULL 占位矩阵（行-该区间交易日，列-统一代码集合）。
+    * 失败/空分段的占位与正常结果同为「带行列标签的矩阵」，使 mergeSegmentResults
+    * 能按行拼接、不丢弃其它分段，并保持日期覆盖连续（消除分段空洞）；
+    * 填 NULL 而非 0，避免用 0 污染缺失位置的因子值。
+    * @param colLabels 统一列标签（升序代码向量）
+    * @return MATRIX 行-交易日，列-colLabels，元素全为 NULL DOUBLE
+    */
+    def buildPlaceholderMatrix(qStart, qEnd, colLabels){
+        rowLabels = getMarketCalendar("XSHG", qStart, qEnd);
+        m = matrix(DOUBLE, size(rowLabels), size(colLabels), , double(NULL));
+        m.rename!(rowLabels, colLabels);
+        return m;
+    };
+
+    /**
     * 计算 [qStart, qEnd] 闭区间的表达式面板。
     * 查询窗口向前外扩 lookbackDays、向后外扩 rightDays 个交易日，保证
     * 滚动算子在区间头部、未来引用在区间尾部不因窗口不足产生 NULL；
@@ -668,10 +665,15 @@ class FeatureEngine{
         try {
             fieldExpr = buildSelectColumnsWithDefaults();
             baseData = sql(select=fieldExpr,from=tb,where=whereConditions,orderBy=<date>).eval();
-            // 检查结果是否为空；返回空 dict 与正常路径返回类型保持一致
+            // 基础数据为空：为每个 alias 填该段 NULL 占位矩阵，保持日期覆盖
+            // 与结果类型（矩阵），避免分段路径下该段整体缺失形成空洞
             if(baseData.rows() == 0) {
                 print("警告: 基础数据获取失败,请检查表达式引用字段: " + fieldExpr);
-                return dict(STRING, ANY, true);
+                empty_dict = dict(STRING, ANY, true);
+                for(expression in expressionsDict.keys()){
+                    empty_dict[expressionsDict[expression]] = buildPlaceholderMatrix(qStart, qEnd, colLabels);
+                };
+                return empty_dict;
             };
 
         } catch(ex){
@@ -699,10 +701,10 @@ class FeatureEngine{
 
                 res = parseExpr(expression,dataDict).eval();
 
-                // 检查结果是否为矩阵
+                // 计算结果为空：填 NULL 占位矩阵（与正常结果同为带标签矩阵）
                 if(res.rows()==0){
                     print("警告: 计算结果为空，请检查表达式: " + expression);
-                    result_dict[expressionsDict[expression]] = createEmptyTable(toListInstruments(),getMarketCalendar("XSHG",qStart,qEnd),`date`code+keys(expressionsDict));
+                    result_dict[expressionsDict[expression]] = buildPlaceholderMatrix(qStart, qEnd, colLabels);
                     continue;
                 };
 
@@ -715,10 +717,10 @@ class FeatureEngine{
                 result_dict[expressionsDict[expression]] = res;
 
             } catch(ex){
-                // ex[1]为错误信息，避免误用ex.msg属性
+                // ex[1]为错误信息，避免误用ex.msg属性；失败同样填 NULL 占位矩阵，
+                // 使分段合并时不因类型不一致丢弃其它分段的正确结果
                 print("【特征计算失败】表达式: " + expression + " | 错误: " + ex[1]);
-                placeholder = createEmptyTable(toListInstruments(),getMarketCalendar("XSHG",qStart,qEnd),`date`code+keys(expressionsDict));
-                result_dict[expressionsDict[expression]] = placeholder;
+                result_dict[expressionsDict[expression]] = buildPlaceholderMatrix(qStart, qEnd, colLabels);
             };
 
         };
@@ -731,7 +733,9 @@ class FeatureEngine{
     /**
     * 合并各分段计算结果：各段矩阵列已按统一 colLabels 对齐，按行拼接。
     * concatMatrix 不保证保留行/列标签，拼接后显式重挂。
-    * 段内出现占位表（表达式计算失败的兜底）时保持旧语义原样返回首个占位。
+    * 失败/空分段已由 computeRangeFeatures 填为 NULL 占位矩阵（同为带标签矩阵），
+    * 故此处对所有分段一视同仁按行拼接——任一分段异常都不会丢弃其它分段的
+    * 正确结果；防御性地跳过极端情况下仍非矩阵的分段（不中断整体合并）。
     */
     def mergeSegmentResults(segResults, colLabels){
         merged = dict(STRING, ANY, true);
@@ -746,23 +750,22 @@ class FeatureEngine{
         for(alias in aliases){
             mats = [];
             rowLabs = array(DATE, 0);
-            broken = false;
             for(seg in segResults){
                 if(!(alias in keys(seg))){
                     continue;
                 };
                 part = seg[alias];
+                // 防御：占位统一为矩阵后此处正常不触发；非矩阵则跳过该段，
+                // 保留其它分段已算出的正确矩阵，不整体丢弃
                 if(regexFind(typestr(part), "MATRIX") == -1){
-                    merged[alias] = part;
-                    broken = true;
-                    break;
+                    continue;
                 };
                 if(part.rows() > 0){
                     mats.append!(part);
                     rowLabs.append!(part.rowNames());
                 };
             };
-            if(broken || size(mats) == 0){
+            if(size(mats) == 0){
                 continue;
             };
             if(size(mats) == 1){
