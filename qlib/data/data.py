@@ -9,6 +9,7 @@ import bisect
 import copy
 import queue
 import re
+import threading
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -741,7 +742,9 @@ class DatasetProvider(abc.ABC):
             return [lst[i:i+n] for i in range(0, len(lst), n)]
 
         column_names:List = [column_names] if isinstance(column_names,str) else column_names
-        split_column_names:List[List[str]] = split_list_by_length(column_names, 30)
+        # 每批字段数可配置（C["ddb_field_chunk_size"]，默认 30）
+        chunk_size: int = int(C.get("ddb_field_chunk_size", 30))
+        split_column_names:List[List[str]] = split_list_by_length(column_names, chunk_size)
         dfs:List[pd.DataFrame] = [ExpressionD.expression(inst, fields, start_time, end_time, freq) for fields in split_column_names]
 
         dfs_filter_empty:List[pd.DataFrame] = [df for df in dfs if isinstance(df, (pd.Series, pd.DataFrame)) and not df.empty]
@@ -776,11 +779,11 @@ class DatasetProvider(abc.ABC):
                 maxtasksperchild=C.maxtasksperchild,
             )(tasks)
 
-            # 合并结果
+            # 合并结果并排序保证确定性，随后落入统一的 cache_to_origin_data 归一化路径
+            # ⚠️ 此处不能提前 return：否则 inst_processors 的处理结果会被丢弃（历史 bug）
             if results:
-                data = pd.concat(results, axis=0)
-            return pd.DataFrame()
-        
+                data = pd.concat(results, axis=0).sort_index()
+
         if not data.empty:
             # column_names,*_ = normalize_fields_to_ddb(column_names)
             # column_names:List[str] = list(column_names.keys())
@@ -1056,8 +1059,8 @@ class LocalExpressionProvider(ExpressionProvider):
         self, instrument, field, start_time=None, end_time=None, freq="day"
     ):
 
-        # 使用ddb表达但也兼容qlib原有表达式,相比qlib表达,缺失对于前序计算期的支持
-        # 比如计算MA10时wind为10所以应该在原有起始日期前10天开始计算.但ddb没有考虑这种情况.
+        # 使用ddb表达但也兼容qlib原有表达式；前序计算期（如 MA10 需向前多取
+        # 10 日）由 fetch_features_from_ddb 按算子树解析后在 DDB 端外扩并截断
         series:pd.Series = pd.Series(np.float32)
         try:
             # 这样便不会从dolphindb_storage中获取数据除非使用的feature调用
@@ -1623,12 +1626,24 @@ class DolphinDBClientProvider:
         # 初始化连接
         config = DDBConnectionSpec(uri=self.uri)
         # 创建连接管理器
-        connector = DDBClient(config)
+        self._connector = DDBClient(config)
         # 创建表操作对象
-        self.session = connector.session
-        # 创建连接池
-        self.pool = connector.pool
+        self.session = self._connector.session
+        # ⚠️ ddb.Session 非线程安全，且 feature 查询是「run(上传日期)→upload(变量)→run(主查询)」
+        # 的多步会话对话，交错执行会互相覆盖服务器端变量（跨线程数据污染的根因）。
+        # 约定：所有 DBClient.session 的触点必须包在 `with DBClient.session_lock:` 内。
+        # 使用 RLock：storage 读取可能嵌套在 feature 查询持锁期间发生。
+        self.session_lock = threading.RLock()
         register_ddb_functions_to_qlib(self.session)
+
+    @property
+    def pool(self):
+        """惰性获取连接池。
+
+        ⚠️ 不在 __init__ 中急切创建：连接池会向服务器开 4 条连接，
+        每条都占服务器内存（社区版 2 核/8GB），且读路径并不使用连接池。
+        """
+        return self._connector.pool
 
 
 import sys

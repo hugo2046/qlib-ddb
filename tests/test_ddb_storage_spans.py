@@ -18,7 +18,7 @@
     （出池不截断、调离不剔除）。
 
     DDB 端本身对 dict 是完好支持的（纯字段分支 ``createDateStockMapping`` +
-    ``conditionalFilter``；非纯字段分支 ``FeatureEngine.buildSpanAwareWhereConditions``），
+    ``conditionalFilter``；非纯字段分支 ``FeatureEngine.buildWhereConditions``），
     所以修复只需在存储层保持 dict 原型（仅键做 ``.upper()``）。
 
     本测试为离线纯单元测试，锁定 ``DBFeatureStorage.__init__`` 三种入参

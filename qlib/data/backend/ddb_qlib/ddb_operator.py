@@ -11,8 +11,31 @@ from typing import Dict, List, Optional, Tuple, Union
 import dolphindb as ddb
 import pandas as pd
 
+from ....log import get_module_logger
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .schemas import QlibTableSchema, TableSchema
+from .utils import get_table_columns
+
+logger = get_module_logger("ddb_operator")
+
+# 按 URI 复用的共享客户端注册表：模块级写入/DDL 函数此前每次调用都新建
+# DDBClient（新 TCP 会话 + 登录），批量导入时反复连接；社区版（2 核/8GB）
+# 服务器上每条会话都占内存，复用一条会话即可。
+# ⚠️ ddb.Session 非线程安全：共享客户端仅用于现状的单线程写入流程。
+_shared_clients: Dict[str, DDBClient] = {}
+
+
+def get_shared_client(uri: str) -> DDBClient:
+    """按 URI 获取（或创建）共享的 DDBClient。
+
+    :param uri: DolphinDB 连接 URI
+    :return: 该 URI 对应的进程内共享客户端
+    """
+    client = _shared_clients.get(uri)
+    if client is None:
+        client = DDBClient(DDBConnectionSpec(uri=uri))
+        _shared_clients[uri] = client
+    return client
 
 
 class DDBTableOperator:
@@ -173,9 +196,8 @@ class DDBTableOperator:
         if not self.exist_table(db_name, table_name):
             raise ValueError(f"{db_path}/{table_name}不存在!")
 
-        table = session.loadTable(table_name, db_path)
-        table_cols = table.schema["name"].tolist()
-    
+        table_cols = get_table_columns(session, db_path, table_name)
+
         # 确保数据列名顺序与表列名顺序一致
         data = data.reindex(columns=table_cols)
 
@@ -213,8 +235,7 @@ class DDBTableOperator:
         if not self.exist_table(db_name, table_name):
             raise ValueError(f"表 {db_path}/{table_name} 不存在!")
 
-        table = session.loadTable(table_name, db_path)
-        table_cols = table.schema["name"].tolist()
+        table_cols = get_table_columns(session, db_path, table_name)
 
         # 确保数据列名顺序与表列名顺序一致
         data = data.reindex(columns=table_cols)
@@ -262,6 +283,8 @@ def create_table(
     partition_columns: str,
     engine: str,
     primary_key: str = None,
+    *,
+    client: Optional[DDBClient] = None,
 ) -> None:
     """
     通用创建表函数
@@ -286,6 +309,8 @@ def create_table(
     :type engine: str
     :param primary_key: 主键列名，默认为None
     :type primary_key: str, optional
+    :param client: 复用的 DDBClient；缺省时按 uri 使用进程内共享客户端
+    :type client: Optional[DDBClient]
 
     :return: 无返回值
     :rtype: None
@@ -295,9 +320,7 @@ def create_table(
     .. note::
        确保在调用此函数之前已正确配置DolphinDB连接参数。
     """
-    config = DDBConnectionSpec(uri=uri)
-    connector = DDBClient(config)
-    db_accessor = DDBTableOperator(connector)
+    db_accessor = DDBTableOperator(client if client is not None else get_shared_client(uri))
 
     db_accessor.create_partitioned_table(
         db_name,
@@ -309,7 +332,7 @@ def create_table(
         engine=engine,
         primary_key=primary_key,
     )
-    print(f"{db_name}/{table_name}生成创建完毕!")
+    logger.info(f"{db_name}/{table_name}生成创建完毕!")
 
 
 def create_qlib_table(uri: str, schema: TableSchema) -> None:
@@ -342,12 +365,13 @@ def create_instrument_table(uri: str, table_name: str = "ashares") -> None:
     create_qlib_table(uri, schema)
 
 
-def clean_qlib_db(uri: str) -> None:
-    """清理Qlib数据库"""
-    config = DDBConnectionSpec(uri=uri)
-    connector = DDBClient(config)
+def clean_qlib_db(uri: str, *, client: Optional[DDBClient] = None) -> None:
+    """清理Qlib数据库
 
-    session = connector.session
+    :param uri: DolphinDB 连接 URI
+    :param client: 复用的 DDBClient；缺省时按 uri 使用进程内共享客户端
+    """
+    session = (client if client is not None else get_shared_client(uri)).session
 
     db_names = QlibTableSchema.get_all_databases()
     expr_lines = [
@@ -358,6 +382,11 @@ def clean_qlib_db(uri: str) -> None:
     
     session.run(expr)
 
+    # 数据库已变更，失效进程内缓存（日历等）
+    from . import invalidate_ddb_caches
+
+    invalidate_ddb_caches()
+
 
 def write_df_to_ddb(
     db_name: str,
@@ -367,6 +396,8 @@ def write_df_to_ddb(
     key_col_names: Optional[Union[str, List[str]]] = None,
     sort_columns: Optional[Union[str, List[str]]] = None,
     uri: Optional[str] = None,
+    *,
+    client: Optional[DDBClient] = None,
 ) -> None:
     """
     将DataFrame数据写入DolphinDB表。
@@ -383,17 +414,17 @@ def write_df_to_ddb(
     :type key_col_names: Optional[Union[str, List[str]]]
     :param sort_columns: upsert时用于排序的列名
     :type sort_columns: Optional[Union[str, List[str]]]
-    :param conn_mgr: DDBClient连接管理器，默认为None（需外部提前初始化）
-    :type conn_mgr: Optional[DDBClient]
+    :param uri: DolphinDB连接URI（与 client 二选一）
+    :type uri: Optional[str]
+    :param client: 复用的 DDBClient；缺省时按 uri 使用进程内共享客户端
+    :type client: Optional[DDBClient]
     """
     
     
-    if uri is None:
-        raise ValueError("请传入已初始化的DDBClient实例(conn_mgr)")
+    if uri is None and client is None:
+        raise ValueError("必须提供 uri 或已初始化的 DDBClient(client)")
 
-    config = DDBConnectionSpec(uri=uri)
-    connector = DDBClient(config)
-    operator = DDBTableOperator(connector)
+    operator = DDBTableOperator(client if client is not None else get_shared_client(uri))
     if upsert:
         operator.table_upsert(
             db_name=db_name,
@@ -408,6 +439,11 @@ def write_df_to_ddb(
             table_name=table_name,
             data=data,
         )
+
+    # 表数据已变更，失效进程内缓存（日历等）
+    from . import invalidate_ddb_caches
+
+    invalidate_ddb_caches()
         
         
 def import_instruments_csv_to_ddb(

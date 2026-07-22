@@ -1,5 +1,113 @@
 # CHANGELOG
 
+## 2026-07-22（审查修复）
+
+### 修复代码审查发现的两个问题（分段丢弃 + 正则兜底误判）
+
+- **分段合并丢弃正确分段**：`mergeSegmentResults` 旧实现遇到占位 TABLE（某
+  分段计算失败/空的兜底）就 `break`，把该表达式其余分段已算出的正确矩阵
+  全部丢弃，与「分段边界结果与整段一致」的保证矛盾。改为把失败/空分段的
+  占位由 `buildPlaceholderMatrix` 统一产出「行-该段交易日、列-presentCodes」
+  的 NULL 矩阵（与正常结果同为带标签矩阵）：合并时一视同仁按行拼接，任一
+  分段异常都不再丢弃其它分段；顺带消除空 `baseData` 分段的日期空洞，并去掉
+  Python 侧期望三元素矩阵却收到 TABLE 的类型隐患。占位填 NULL 而非 0，避免
+  污染缺失位置的因子值。移除因此不再被调用的 `createEmptyTable`。
+- **正则兜底把数值常量误判为窗口**：回看解析兜底（仅对 qlib 解析不了的表达式
+  生效）取最大独立整数为窗口，会把 `gtjaAlpha191_005($volume/1000000, ...)`
+  里的 `1000000` 当成百万日回看，在 2 核/8GB 上触发超量查询。新增
+  `_MAX_FALLBACK_WINDOW=2000`（约 8 年交易日）上界：超过即视为常量剔除，
+  剔除后无候选则退回 `ddb_lookback_default`。新增 3 项针对性单测。
+
+## 2026-07-22
+
+### DDB 计算分支：滚动算子自动取前序期 + 真实分段计算（替代虚假 repartitionDS）
+
+修复两个相互纠缠的老问题（详见
+`docs/DDB取前序期与分段计算_20260722.md`）：
+
+- **取前序期**：DDB 后端此前把用户的 `start_time` 原样下发，
+  `Mean($close,20)` 在区间头部前 19 个交易日必然 NaN（文件后端靠
+  `get_extended_window_size` 外扩，DDB 分支绕过了该机制）。现在 Python 侧
+  复用 qlib 算子树解析每批表达式的（向前, 向后）外扩交易日数（嵌套算子
+  递归累加、双臂算子取 max、`Ref($close,-2)` 标签向后外扩），经
+  `FeatureEngineeringByDate` 尾参传给 DDB；服务器端外扩查询窗口计算后
+  把结果矩阵截断回请求区间。qlib 无法实例化的表达式（DDB 专属 alpha 库
+  函数）退回启发式：正则扫独立整数当窗口，扫不到用
+  `C["ddb_lookback_default"]`（默认 252）兜底。
+- **分段计算**：原 `repartitionDS(..., RANGE, [start, end])` 只有 2 个边界
+  → 永远只产生 1 个数据源，mr 退化为单任务（代码中 FIXME 自证的
+  "虚假的分区"）。且真把日期切段后每段头部都会缺窗口——与取前序期
+  必须一起设计。现移除 repartitionDS+mr，改为：内存估算
+  （`FeatureEngine.isRunWithAvailableMemory`，扩展窗口 + 表达式矩阵项 +
+  70% 空闲内存上限）放得下则整段单次计算；放不下按
+  `C["ddb_days_step"]` 切段**顺序循环**（单机 2 核 mr 并行收益小且峰值
+  内存翻倍），每段查询带 lookback 重叠（halo）、段内截断，各段 panel 用
+  统一列标签（窗口内实际出现的代码集合）对齐后 `concatMatrix` 纵向合并，
+  保证分段边界处滚动结果与整段计算一致。
+
+接口兼容：`FeatureEngineeringByDate` 新增尾参
+`lookbackDays=0, rightDays=0`（旧调用形式行为不变）；Python 公共接口
+`D.features()` 签名不变。离线单测 +12（回看解析/批量取 max/脚本接线），
+DDB 端脚本行为待 live 验证。
+
+## 2026-07-21
+
+### DDB 后端系统性优化（分支 optimize/ddb-backend，17 个原子提交）
+
+面向 DolphinDB **社区版（2 核 / 8GB）** 的一轮优化：省往返、省传输、
+省服务器内存、控会话数；公共接口 `D.features()/D.calendar()/D.instruments()`
+的签名与返回结果完全不变。全部改动配套离线单测（mock 会话，共 115 项通过）。
+
+**Bug 修复**：
+
+- `ddb_dataset_processor` 在传入 `inst_processors` 时提前 `return pd.DataFrame()`，
+  并行处理结果被整体丢弃（`data.py:782`）。
+- `DDBClient` 连接池：`_pool_instance` 类变量导致多客户端共享同一池；
+  `close_pool` 引用不存在的 `_pool_lock` 且永远读到 None（从未真正关闭过池）；
+  删除调用不存在 `get_session()` 的死方法 `tableAppender/tableUpsert` 与
+  `__main__` 中的硬编码凭据。
+- `DolphinDBClientProvider` init 时急切创建 4 连接的池（无消费方）→ 改懒创建。
+- `load_mysql_plugin` 误装 `lgbm` 插件（应为 `mysql`）。
+- `DolphinDBDataLoader.__exit__/__del__` 无条件关闭进程级共享 session →
+  引入 `_owns_session` 所有权标志。
+
+**并发/线程安全**：
+
+- 新增会话级 `DBClient.session_lock`（RLock）：feature 查询是
+  「run→upload→run」多步会话对话，交错执行会互相覆盖服务器变量
+  （跨线程数据污染根因）；所有 session 触点统一持锁。
+- `QlibDataLoader` 全局 `_load_lock` 收窄至 DDB 路径，文件后端恢复无锁并行。
+
+**健壮性/质量**：
+
+- 12 处 `print` → loguru；3 处裸 `except:` 收敛；异常重包装补 `from e`。
+- MySQL 同步 SQL 参数白名单校验（`validate_date_str`/`validate_sql_identifier`，
+  唯一真实注入面）。
+- 清理死代码（注释块 ×2、零调用者函数 ×2、16KB 备份脚本）与
+  `OPERATOR_MAPPING` 重复键（生效映射不变，ast 测试锁定）。
+
+**性能**（RPC 往返：计算分支每批 3-4 次 → 预热后 2 次）：
+
+- 交易日历模块级缓存：Alpha158 一次 `D.features` 从 ~6 次全量日历下载 → 0；
+  `DBCalendarStorage.index()/__getitem__` 改走 `H["c"]` 缓存。
+- 日期字面量内联（消灭独立上传往返）；纯字段分支合并为单条 SQL 脚本；
+  上传字典按分支裁剪。`fetch_features_from_ddb` 拆为编排器 + 4 个 helper。
+- existsTable 仅正向缓存、股票池走 `H["i"]`、表 schema 进程内缓存、
+  表达式翻译 lru_cache；统一由 `ddb_qlib.invalidate_ddb_caches()` 失效
+  （写路径自动调用）。
+- 计算分支结果直构 `(instrument, datetime)` MultiIndex 面板，替代
+  concat→unstack→stack→swaplevel 的 ~4 次全景拷贝（保留 legacy 兜底 +
+  逐值等价测试）。
+- 三个 alpha 因子库（约 119KB）按字段前缀惰性加载（`Cannot recognize the
+  token` 兜底重试；`C["ddb_preload_alpha_libs"]` 逃生开关）。
+- 写路径按 URI 复用共享 `DDBClient`（批量导入 N 会话 → 1）。
+- 批次参数配置化：`C["ddb_field_chunk_size"]=30`、`C["ddb_days_step"]=252`
+  （默认值不变，`scripts/benchmark_ddb_backend.py` 供 live 校准）。
+
+**明确不做**（2 核/8GB 约束）：读路径不引入 `DBConnectionPool` 并发、
+不调高 mr 并行度、不做服务器端全景 pivot、不引入 module/functionView 持久化。
+
+
 ## 2026-07-20
 
 ### fix: DDB 批量取数路径恢复成分股 spans（入池/出池）过滤 ⚠️ BREAKING 行为变更

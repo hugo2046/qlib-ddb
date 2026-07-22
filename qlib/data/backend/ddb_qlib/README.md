@@ -189,6 +189,39 @@ bridge.close()
    - 做好异常处理和错误日志
    - 定期检查数据一致性
 
+5. **进程内缓存与失效**
+
+   为减少 RPC 往返，本后端在进程内缓存：交易日历（`TradeDateUtils`）、
+   表 schema（`utils.get_table_columns`）、`existsTable` 正向结果、
+   股票池（`H["i"]`）与表达式翻译（lru_cache）。
+
+   - 经 `write_df_to_ddb` / CSV 导入 / `clean_qlib_db` 的写入会**自动失效**缓存；
+   - 若数据被**外部进程**写入（本进程无感知），长驻只读进程需手动失效：
+
+   ```python
+   from qlib.data.backend.ddb_qlib import invalidate_ddb_caches
+   invalidate_ddb_caches()
+   ```
+
+6. **批次参数（社区版 2 核/8GB 调优）**
+
+   ```python
+   qlib.init(
+       database_uri="dolphindb://...",
+       ddb_field_chunk_size=30,     # 每批查询的字段数
+       ddb_days_step=252,           # 内存不足时的日期分段长（交易日数），8GB 建议 ≤504
+       ddb_lookback_default=252,    # 表达式回看解析失败时的兜底外扩交易日数
+       ddb_preload_alpha_libs=False,  # True 恢复 init 全量预载 alpha 因子库
+   )
+   ```
+
+   计算分支自动按表达式外扩查询窗口（取前序期）并在服务器端截断回请求
+   区间；内存估算不足时按 `ddb_days_step` 分段顺序计算（每段带回看重叠），
+   详见 `docs/DDB取前序期与分段计算_20260722.md`。
+
+   可用 `DDB_BENCH_URI=... python scripts/benchmark_ddb_backend.py` 对
+   实际服务器做基准校准。
+
 ## 技术支持
 
 如有问题，请联系：

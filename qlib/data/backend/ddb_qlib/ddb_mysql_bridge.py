@@ -12,10 +12,13 @@ from urllib.parse import urlparse, unquote, parse_qs
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, validate_arguments
 
+from ....log import get_module_logger
 from .ddb_client import DDBClient, DDBConnectionSpec
 from .ddb_operator import DDBTableOperator
 from .schemas import QlibTableSchema, FIELDS_MAPPING
-from .utils import convert_wind_date_to_datetime
+from .utils import convert_wind_date_to_datetime, validate_date_str, validate_sql_identifier
+
+logger = get_module_logger("ddb_mysql_bridge")
 
 class MySQLConnectionSpec(BaseModel):
     """适配多种MySQL方言的连接参数规范"""
@@ -106,9 +109,10 @@ class DDBMySQLBridge:
 
     def load_mysql_plugin(self) -> None:
         """在dolphinDB中加载MySQL插件"""
+        # ⚠️ 历史 bug：此处曾误装 "lgbm" 插件，导致 mysql::connect 必然失败
         expr: str = """
-        installPlugin("lgbm")
-        loadPlugin("lgbm")
+        installPlugin("mysql")
+        loadPlugin("mysql")
         """
         self.ddb_session.run(expr)
 
@@ -130,7 +134,7 @@ class DDBMySQLBridge:
             self.ddb_session.run("mysql::close(mysql_conn)")
         except Exception as e:
             # 即使关闭连接失败，也不应该中断程序执行
-            print(f"警告: 关闭MySQL连接时出现错误: {str(e)}")
+            logger.warning(f"关闭MySQL连接时出现错误: {e}")
 
     @validate_arguments
     def load_table(
@@ -247,8 +251,8 @@ class QlibDDBMySQLInitializer:
         if self._bridge:
             try:
                 self._bridge.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"关闭 bridge 失败: {e}")
         return False
     
     def _get_bridge(self):
@@ -293,7 +297,7 @@ class QlibDDBMySQLInitializer:
         """
         bridge = self._get_bridge()
         try:
-            print(f"正在同步 {schema_func.__name__} 从 {table_name}...")
+            logger.info(f"正在同步 {schema_func.__name__} 从 {table_name}...")
             cols, name_type = self._extract_columns(schema_func)
             query = f"SELECT {cols} FROM {table_name}" + (
                 f" WHERE {where_clause}" if where_clause else ""
@@ -307,7 +311,7 @@ class QlibDDBMySQLInitializer:
             bridge.ddb_operator.table_appender(
                 schema_func().db_name, schema_func().table_name, data
             )
-            print(f"已完成 {schema_func.__name__} 从 {table_name} 的同步。\n")
+            logger.info(f"已完成 {schema_func.__name__} 从 {table_name} 的同步")
         except Exception as e:
             raise RuntimeError(f"同步表 {table_name} 失败: {str(e)}") from e
     
@@ -324,7 +328,8 @@ class QlibDDBMySQLInitializer:
         :param exchange_market: 交易所市场，默认为"SSE"
         :type exchange_market: str
         """
-        where_clause = f"S_INFO_EXCHMARKET='{exchange_market}'"
+        # 防注入：交易所参数将拼入 SQL，先做白名单校验
+        where_clause = f"S_INFO_EXCHMARKET='{validate_sql_identifier(exchange_market)}'"
         self._sync_table(QlibTableSchema.calendar, "ASHARECALENDAR", where_clause)
     
     def sync_feature_daily(self, start_date: str = "20100101", end_date: str = "20241231"):
@@ -336,7 +341,8 @@ class QlibDDBMySQLInitializer:
         :param end_date: 结束日期，格式：YYYYMMDD
         :type end_date: str
         """
-        where_clause = f"TRADE_DT BETWEEN {start_date} AND {end_date}"
+        # 防注入：日期参数将拼入 SQL，先做格式校验
+        where_clause = f"TRADE_DT BETWEEN {validate_date_str(start_date)} AND {validate_date_str(end_date)}"
         self._sync_table(QlibTableSchema.feature_daily, "ASHAREEODPRICES", where_clause)
     
     def sync_index_daily(self, index_codes: List[str], start_date: str = "20100101", end_date: str = "20241231"):
@@ -359,6 +365,11 @@ class QlibDDBMySQLInitializer:
         
         if not index_codes:
             raise ValueError("index_codes不能为空")
+
+        # 防注入：指数代码与日期将拼入 SQL，先做白名单/格式校验
+        index_codes = [validate_sql_identifier(code) for code in index_codes]
+        start_date = validate_date_str(start_date)
+        end_date = validate_date_str(end_date)
         
         # 构建WHERE条件
         if len(index_codes) == 1:
@@ -370,7 +381,7 @@ class QlibDDBMySQLInitializer:
             
         bridge = self._get_bridge()
         try:
-            print(f"正在同步指数 {','.join(index_codes)} 从 AINDEXEODPRICES 至 IndexDaily 表...")
+            logger.info(f"正在同步指数 {','.join(index_codes)} 从 AINDEXEODPRICES 至 IndexDaily 表...")
             
             # 定义指数列映射
             index_columns = (
@@ -395,7 +406,7 @@ class QlibDDBMySQLInitializer:
             data = bridge.load_table(query)
             
             if data.empty:
-                print(f"警告: 指数 {','.join(index_codes)} 在时间范围 {start_date}-{end_date} 内无数据")
+                logger.warning(f"指数 {','.join(index_codes)} 在时间范围 {start_date}-{end_date} 内无数据")
                 return
            
             # 转换日期格式
@@ -409,7 +420,7 @@ class QlibDDBMySQLInitializer:
                 data
             )
             
-            print(f"已完成指数数据同步：{len(data)} 条记录已写入 {features_schema.table_name} 表\n")
+            logger.info(f"已完成指数数据同步：{len(data)} 条记录已写入 {features_schema.table_name} 表")
             
         except Exception as e:
             error_msg = f"同步指数表失败 - 指数: {','.join(index_codes)}, 时间范围: {start_date}-{end_date}"
@@ -439,8 +450,8 @@ class QlibDDBMySQLInitializer:
         if self._bridge:
             try:
                 self._bridge.close()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"关闭 bridge 失败: {e}")
             self._bridge = None
 
 

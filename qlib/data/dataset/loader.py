@@ -215,10 +215,16 @@ class QlibDataLoader(DLWParser):
                 ), f"freq(={self.freq}), inst_processors(={self.inst_processors}) cannot be None/empty"
 
     def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
-        # 串行化整个 load 体（含 is_group 两分支与 load_group_df 调用），阻断并发 load
-        # 共享 qlib 数据层时的跨线程数据污染。详见 _load_lock 注释。
-        with QlibDataLoader._load_lock:
-            return super().load(instruments, start_time, end_time)
+        # 跨线程数据污染仅在 DolphinDB 后端出现（单一共享 session + 全局 H 缓存）；
+        # 文件后端本就线程安全，加锁反而是吞吐回归，故锁收窄到 DDB 路径。
+        # DDB 路径在会话级 session_lock（B1）之外保留本 load 级锁，作为全局 H
+        # MemCache 写模式的双保险。详见 _load_lock 注释。
+        from ..data import is_using_dolphindb
+
+        if is_using_dolphindb():
+            with QlibDataLoader._load_lock:
+                return super().load(instruments, start_time, end_time)
+        return super().load(instruments, start_time, end_time)
 
     def load_group_df(
         self,
@@ -722,7 +728,12 @@ class DolphinDBDataLoader(SQLDataLoader):
             raise ValueError("db_name cannot be empty")
 
         # Initialize connections and state
+        # ⚠️ 这里持有的是进程级共享的 DBClient.session（storage/feature 路径同用），
+        # 本实例并不拥有它，因此 _owns_session=False，teardown 时不得关闭；
+        # 会话非线程安全，所有 self.session 调用必须持有 _session_lock
         self.session = DBClient.session
+        self._session_lock = DBClient.session_lock
+        self._owns_session = False
         self._table_validated = False
         self._mysql_bridge = None  # DolphinDB mode only
 
@@ -736,7 +747,9 @@ class DolphinDBDataLoader(SQLDataLoader):
 
         try:
             table_path = f"dfs://{self.db_name}"
-            if not self.session.existsTable(table_path, self.table_name):
+            with self._session_lock:
+                table_exists = self.session.existsTable(table_path, self.table_name)
+            if not table_exists:
                 raise ValueError(
                     f"Table '{self.table_name}' does not exist in database '{self.db_name}'. "
                     f"Please check table name and database configuration."
@@ -745,7 +758,7 @@ class DolphinDBDataLoader(SQLDataLoader):
         except Exception as e:
             if "does not exist" in str(e):
                 raise ValueError(str(e))
-            raise RuntimeError(f"Failed to validate table existence: {e}")
+            raise RuntimeError(f"Failed to validate table existence: {e}") from e
 
     def load(self, instruments=None, start_time=None, end_time=None) -> pd.DataFrame:
         """
@@ -817,44 +830,46 @@ class DolphinDBDataLoader(SQLDataLoader):
         pivot_values=None,
     ) -> pd.DataFrame:
         """Load data directly from DolphinDB."""
-        # Load table and build query
-        tb = self.session.loadTable(
-            dbPath=f"dfs://{self.db_name}", tableName=self.table_name
-        )
-
-        # Build select clause
-        select_fields = self._build_select_list(
-            fields, datetime_col, instruments_col, pivot, pivot_columns
-        )
-
-        # 在透视模式下，确保包含值列
-        if pivot and pivot_values and pivot_values not in select_fields:
-            select_fields.append(pivot_values)
-
-        query = tb.select(select_fields)
-
-        # Apply time filtering
-        if start_time and end_time:
-            time_filter = self._build_time_filter(
-                start_time, end_time, datetime_col, datetime_format, mysql_format=False
+        # ⚠️ loadTable 句柄创建与 toDF 执行是同一会话上的多步对话，整体持锁
+        with self._session_lock:
+            # Load table and build query
+            tb = self.session.loadTable(
+                dbPath=f"dfs://{self.db_name}", tableName=self.table_name
             )
-            query = query.where(time_filter)
 
-        # Apply instrument filtering
-        if instruments:
-            instruments_filter = self._build_instruments_filter(
-                instruments, instruments_col, mysql_format=False
+            # Build select clause
+            select_fields = self._build_select_list(
+                fields, datetime_col, instruments_col, pivot, pivot_columns
             )
-            query = query.where(instruments_filter)
 
-        # 在透视模式下，添加字段筛选条件
-        if pivot and fields and pivot_columns:
-            fields_filter = self._build_pivot_fields_filter(
-                fields, pivot_columns, mysql_format=False
-            )
-            query = query.where(fields_filter)
+            # 在透视模式下，确保包含值列
+            if pivot and pivot_values and pivot_values not in select_fields:
+                select_fields.append(pivot_values)
 
-        return query.toDF()
+            query = tb.select(select_fields)
+
+            # Apply time filtering
+            if start_time and end_time:
+                time_filter = self._build_time_filter(
+                    start_time, end_time, datetime_col, datetime_format, mysql_format=False
+                )
+                query = query.where(time_filter)
+
+            # Apply instrument filtering
+            if instruments:
+                instruments_filter = self._build_instruments_filter(
+                    instruments, instruments_col, mysql_format=False
+                )
+                query = query.where(instruments_filter)
+
+            # 在透视模式下，添加字段筛选条件
+            if pivot and fields and pivot_columns:
+                fields_filter = self._build_pivot_fields_filter(
+                    fields, pivot_columns, mysql_format=False
+                )
+                query = query.where(fields_filter)
+
+            return query.toDF()
 
     def query_raw_data(
         self,
@@ -948,7 +963,7 @@ class DolphinDBDataLoader(SQLDataLoader):
                 return self._load_from_mysql_bridge(select, where, groupBy, having)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to load data: {e}")
+            raise RuntimeError(f"Failed to load data: {e}") from e
 
     def _load_from_dolphindb(
         self,
@@ -992,7 +1007,8 @@ class DolphinDBDataLoader(SQLDataLoader):
         )
 
         # Execute query
-        result = self.session.run(expr)
+        with self._session_lock:
+            result = self.session.run(expr)
 
         # Ensure DataFrame return
         if not isinstance(result, pd.DataFrame):
@@ -1023,7 +1039,9 @@ class DolphinDBDataLoader(SQLDataLoader):
                 "table_exists": False,
             }
 
-            if self.session.existsTable(f"dfs://{self.db_name}", self.table_name):
+            with self._session_lock:
+                table_exists = self.session.existsTable(f"dfs://{self.db_name}", self.table_name)
+            if table_exists:
                 info["table_exists"] = True
                 # Could add more table info like row count, column info, etc.
 
@@ -1038,7 +1056,9 @@ class DolphinDBDataLoader(SQLDataLoader):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with proper resource cleanup."""
         try:
-            if self.session:
+            # ⚠️ 历史 bug：曾无条件 close 进程级共享 session，破坏其他使用方；
+            # 仅在本实例独占会话（_owns_session=True）时才允许关闭
+            if self._owns_session and self.session:
                 self.session.close()
         except Exception as e:
             warnings.warn(f"Error closing DolphinDB session: {e}")
@@ -1047,7 +1067,7 @@ class DolphinDBDataLoader(SQLDataLoader):
     def __del__(self):
         """Destructor for cleanup."""
         try:
-            if hasattr(self, "session") and self.session:
+            if getattr(self, "_owns_session", False) and getattr(self, "session", None):
                 self.session.close()
         except Exception:
             pass  # Ignore cleanup errors in destructor

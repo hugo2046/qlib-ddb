@@ -111,6 +111,18 @@ _default_config = {
     "provider": "LocalProvider",
     # database uri for database backend
     "database_uri": None,
+    # ---- DolphinDB 后端批次参数（目标服务器为社区版 2 核/8GB 时的取舍）----
+    # 每批查询的字段数：增大会加宽客户端 concat 宽度、减少批次数
+    "ddb_field_chunk_size": 30,
+    # FeatureEngineeringByDate 的日期分片（交易日数，内存不足才启用分段）：
+    # 单段服务器内存 ≈ days_step × 股票数 × 基础字段数 × 8B
+    # （5000 股 × 5 字段 × 252 天 ≈ 50MB），8GB 内存建议不超过 504
+    "ddb_days_step": 252,
+    # 表达式回看窗口的兜底交易日数：qlib 算子树解析不了（DDB 专属 alpha
+    # 库函数等）且正则扫不到窗口整数时，向前外扩这么多个交易日
+    "ddb_lookback_default": 252,
+    # True 时 init 全量预载三个 alpha 因子库（默认按字段引用惰性加载）
+    "ddb_preload_alpha_libs": False,
     # dolphindb provider config
     # "dolphindb_provider": None,
     "dbclient_provider":None,
