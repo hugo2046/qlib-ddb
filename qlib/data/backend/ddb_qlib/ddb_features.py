@@ -194,6 +194,71 @@ def _load_all_alpha_libs(session: ddb.Session) -> None:
 
 ##################################################################################################################
 
+# 回看窗口启发式解析：独立整数字面量（排除标识符与小数的组成部分，
+# 如 gtjaAlpha191_001 中的 191 不会被误判为窗口）
+_STANDALONE_INT_PATTERN = re.compile(r"(?<![\w.])(\d+)(?![\w.])")
+# 负数窗口（未来引用，如 Ref($close,-2)）仅以函数参数形式出现，
+# 避免把减法运算（如 "close-1"）误判为未来引用
+_FUTURE_INT_PATTERN = re.compile(r",\s*-(\d+)")
+
+
+@functools.lru_cache(maxsize=4096)
+def get_expression_extended_window(expr: str, default_lookback: int) -> Tuple[int, int]:
+    """解析 qlib 表达式所需的（向前, 向后）外扩交易日数。
+
+    与文件后端 ``LocalExpressionProvider.file_expression`` 的取前序期语义
+    对齐：优先复用 qlib 算子树的 ``get_extended_window_size``（递归处理
+    嵌套算子、双臂算子取 max、以及 ``Ref($close,-2)`` 这类未来引用的向后
+    外扩）。qlib 无法实例化的表达式（DDB 专属 alpha 库函数等）退回启发式：
+    正则扫描独立整数字面量当窗口，扫不到时用 ``default_lookback`` 兜底；
+    真正非法的表达式仍会在 DDB 端 parseExpr 阶段报错（原有行为）。
+
+    :param expr: 原始 qlib 表达式（含 ``$`` 字段引用）
+    :param default_lookback: 启发式扫不到窗口时的兜底回看交易日数
+    :return: ``(向前外扩交易日数, 向后外扩交易日数)``
+    """
+    try:
+        from ....config import C
+        from ....utils import parse_field
+        from ...base import Feature, PFeature
+        from ...ops import Operators, register_all_ops
+
+        # 未经 qlib.init 的独立调用场景（如离线测试）惰性注册默认算子
+        if not getattr(Operators, "_ops", None):
+            register_all_ops(C)
+        # 安全说明：与 qlib 核心 ExpressionProvider.get_expression_instance
+        # 完全同款的 eval 解析（同一信任模型：字段表达式来自使用者配置），
+        # 且此处限定了命名空间仅暴露 Operators/Feature/PFeature
+        instance = eval(
+            parse_field(expr),
+            {"Operators": Operators, "Feature": Feature, "PFeature": PFeature},
+        )
+        lft_etd, rght_etd = instance.get_extended_window_size()
+        return int(lft_etd), int(rght_etd)
+    except Exception:
+        ints = [int(s) for s in _STANDALONE_INT_PATTERN.findall(expr)]
+        lft_etd = max(ints) if ints else int(default_lookback)
+        futures = [int(s) for s in _FUTURE_INT_PATTERN.findall(expr)]
+        return lft_etd, max(futures) if futures else 0
+
+
+def batch_extended_window(
+    exprs: Iterable[str], default_lookback: int
+) -> Tuple[int, int]:
+    """对一批表达式取（向前, 向后）外扩交易日数的最大值。
+
+    同批表达式共享同一份基础数据面板，故按批取 max 外扩。
+
+    :param exprs: 原始 qlib 表达式集合
+    :param default_lookback: 单表达式解析失败时的兜底回看交易日数
+    :return: ``(向前外扩交易日数, 向后外扩交易日数)``
+    """
+    lft_etd, rght_etd = 0, 0
+    for expr in exprs:
+        lft, rght = get_expression_extended_window(expr, default_lookback)
+        lft_etd, rght_etd = max(lft_etd, lft), max(rght_etd, rght)
+    return lft_etd, rght_etd
+
 
 def normalize_fields_to_ddb(
     fields: Union[str, List[str], Dict],
@@ -291,10 +356,10 @@ def apply_spans_mask(data: pd.DataFrame, spans: Dict[str, List]) -> pd.DataFrame
     """按成分股 spans（入池/出池区间）对结果面板做行掩码。
 
     用于 ``fetch_features_from_ddb`` 非纯字段分支的 Python 侧兜底过滤：
-    ``FeatureEngineeringByDate`` 经 ``mr`` 分布式执行时，worker 端无法还原
-    ``conditionalFilter`` 所需的 dict（报 "filterMap must be a dictionary"），
-    故 DDB 端按键列表全量计算，spans 过滤在此处补齐。先算后掩码的语义与
-    原版 qlib ``inst_calculator``（data.py 中按 spans 做 mask）一致。
+    计算分支向 ``FeatureEngineeringByDate`` 传键列表全量计算（历史上因
+    mr worker 端还原不了 ``conditionalFilter`` 所需的 dict，协议保持不变），
+    spans 过滤在此处补齐。先算后掩码的语义与原版 qlib
+    ``inst_calculator``（data.py 中按 spans 做 mask）一致。
 
     :param data: 以 ``(instrument, datetime)`` 为 MultiIndex 的结果面板。
     :type data: pd.DataFrame
@@ -383,9 +448,8 @@ def fetch_features_from_ddb(
     if isinstance(instruments, str):
         instruments = [instruments]
 
-    # 防御性检查：filter_pipe 可能把 instruments 全部过滤掉
-    # 空 instruments 进入 DDB 会触发 fetchFeatures 空数据兜底路径，
-    # 返回 TABLE 与 union_dict 期望的 dict 类型不一致，报 "Incompatible vector/matrix size"
+    # 防御性检查：filter_pipe 可能把 instruments 全部过滤掉，
+    # 空 instruments 直接早退，避免进入 DDB 端空数据兜底路径
     if not instruments:
         return pd.DataFrame()
 
@@ -397,8 +461,21 @@ def fetch_features_from_ddb(
             session, instruments, base_fields, db_name, table_name, start_time, end_time
         )
     else:
+        # 滚动/引用算子按 qlib 算子树外扩查询窗口（DDB 端计算后截断回请求
+        # 区间），对齐文件后端 get_extended_window_size 的取前序期语义，
+        # 避免 Mean($close,20) 在 start_time 后前 19 个交易日全为 NaN
+        try:
+            from ....config import C
+
+            default_lookback = int(C.get("ddb_lookback_default", 252))
+        except Exception:
+            default_lookback = 252
+        lookback_days, right_days = batch_extended_window(
+            alias_to_origin_expr_map.values(), default_lookback
+        )
         raw = _compute_expressions(
-            session, instruments, normalized_expr, base_fields, db_name, table_name, start_time, end_time
+            session, instruments, normalized_expr, base_fields, db_name, table_name,
+            start_time, end_time, lookback_days, right_days,
         )
         # DDB 端在 baseData 为空时会返回空 dict（兜底路径），需要在此处早返回
         # 避免 pd.concat({}) 报 "No objects to concatenate"
@@ -490,14 +567,22 @@ def _compute_expressions(
     table_name: str,
     start_time: str,
     end_time: str,
+    lookback_days: int = 0,
+    right_days: int = 0,
 ) -> Union[pd.DataFrame, None]:
-    """计算表达式分支：经 ``FeatureEngineeringByDate``（mr 防 OOM）服务器端计算。
+    """计算表达式分支：经 ``FeatureEngineeringByDate`` 服务器端计算。
 
-    ⚠️ dict（成分股 spans）时不能把 dict 传给 FeatureEngineeringByDate：
-    其内部经 mr 分布式执行，worker 端还原不了 conditionalFilter 所需的
-    dict（报 "filterMap must be a dictionary"）。故此处传键列表全量计算，
-    spans 过滤在拿到结果后由 apply_spans_mask 在 Python 侧补齐。
+    DDB 端按内存估算自动选择整段单次计算或按日期分段顺序计算（防 OOM）；
+    每次查询按 ``lookback_days``/``right_days`` 外扩窗口，计算后截断回
+    请求区间，保证滚动算子在区间头部、未来引用在区间尾部不缺窗口。
 
+    ⚠️ dict（成分股 spans）时不把 dict 传给 FeatureEngineeringByDate：
+    历史上其内部经 mr 分布式执行，worker 端还原不了 conditionalFilter
+    所需的 dict。现保持同一协议——传键列表全量计算，spans 过滤在拿到
+    结果后由 apply_spans_mask 在 Python 侧补齐。
+
+    :param lookback_days: 向前外扩的交易日数（滚动算子回看窗口）
+    :param right_days: 向后外扩的交易日数（未来引用，如标签 Ref($close,-2)）
     :return: 服务器返回的原始 ``{alias: [值矩阵(dates×codes), 日期, 代码]}``；
         DDB 返回空 dict（baseData 为空的兜底路径）时返回 None
     """
@@ -517,7 +602,7 @@ def _compute_expressions(
     except Exception:
         days_step = 252
     ddb_expr = f"""
-    FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}",{days_step})
+    FeatureEngineeringByDate({inst_expr},expressions,baseFields,{start_time},{end_time},"{db_name}","{table_name}",{days_step},{lookback_days},{right_days})
     """
     def _log_failure() -> None:
         # 记录排查上下文；instruments 可能上千个，只记数量与头部样本

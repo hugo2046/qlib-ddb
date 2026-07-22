@@ -1059,8 +1059,8 @@ class LocalExpressionProvider(ExpressionProvider):
         self, instrument, field, start_time=None, end_time=None, freq="day"
     ):
 
-        # 使用ddb表达但也兼容qlib原有表达式,相比qlib表达,缺失对于前序计算期的支持
-        # 比如计算MA10时wind为10所以应该在原有起始日期前10天开始计算.但ddb没有考虑这种情况.
+        # 使用ddb表达但也兼容qlib原有表达式；前序计算期（如 MA10 需向前多取
+        # 10 日）由 fetch_features_from_ddb 按算子树解析后在 DDB 端外扩并截断
         series:pd.Series = pd.Series(np.float32)
         try:
             # 这样便不会从dolphindb_storage中获取数据除非使用的feature调用

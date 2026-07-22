@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 2026-07-22
+
+### DDB 计算分支：滚动算子自动取前序期 + 真实分段计算（替代虚假 repartitionDS）
+
+修复两个相互纠缠的老问题（详见
+`docs/DDB取前序期与分段计算_20260722.md`）：
+
+- **取前序期**：DDB 后端此前把用户的 `start_time` 原样下发，
+  `Mean($close,20)` 在区间头部前 19 个交易日必然 NaN（文件后端靠
+  `get_extended_window_size` 外扩，DDB 分支绕过了该机制）。现在 Python 侧
+  复用 qlib 算子树解析每批表达式的（向前, 向后）外扩交易日数（嵌套算子
+  递归累加、双臂算子取 max、`Ref($close,-2)` 标签向后外扩），经
+  `FeatureEngineeringByDate` 尾参传给 DDB；服务器端外扩查询窗口计算后
+  把结果矩阵截断回请求区间。qlib 无法实例化的表达式（DDB 专属 alpha 库
+  函数）退回启发式：正则扫独立整数当窗口，扫不到用
+  `C["ddb_lookback_default"]`（默认 252）兜底。
+- **分段计算**：原 `repartitionDS(..., RANGE, [start, end])` 只有 2 个边界
+  → 永远只产生 1 个数据源，mr 退化为单任务（代码中 FIXME 自证的
+  "虚假的分区"）。且真把日期切段后每段头部都会缺窗口——与取前序期
+  必须一起设计。现移除 repartitionDS+mr，改为：内存估算
+  （`FeatureEngine.isRunWithAvailableMemory`，扩展窗口 + 表达式矩阵项 +
+  70% 空闲内存上限）放得下则整段单次计算；放不下按
+  `C["ddb_days_step"]` 切段**顺序循环**（单机 2 核 mr 并行收益小且峰值
+  内存翻倍），每段查询带 lookback 重叠（halo）、段内截断，各段 panel 用
+  统一列标签（窗口内实际出现的代码集合）对齐后 `concatMatrix` 纵向合并，
+  保证分段边界处滚动结果与整段计算一致。
+
+接口兼容：`FeatureEngineeringByDate` 新增尾参
+`lookbackDays=0, rightDays=0`（旧调用形式行为不变）；Python 公共接口
+`D.features()` 签名不变。离线单测 +12（回看解析/批量取 max/脚本接线），
+DDB 端脚本行为待 live 验证。
+
 ## 2026-07-21
 
 ### DDB 后端系统性优化（分支 optimize/ddb-backend，17 个原子提交）

@@ -163,20 +163,6 @@ def canRunWithAvailableMemory(start_date, end_date, instruments, queryFields, db
 /* 特征数据获取相关代码 */
 
 /**
-* 合并多个字典的键值对
-* @param dicts - 包含多个字典的列表 k-str v-matrix
-* @return 合并后的字典，包含所有输入字典的键值对
-*/
-def union_dict(dicts){
-    out_put_dict = dict(STRING, ANY)
-    for (j in flatten(dicts)) {
-        dictUpdate!(out_put_dict, unionAll, j.keys(), j.values())
-    }
-    // 遍历每个字典，将其键值对合并到输出字典中
-    return out_put_dict;
-};
-
-/**
  * 为给定日期范围内的每个交易日创建对应的可交易股票列表映射
  * 
  * @param startDate DATE - 开始日期
@@ -531,18 +517,21 @@ class FeatureEngine{
     endTime::DATE;
     freq::STRING;
     tb::ANY; // 加载的表格
+    lookbackDays::INT; // 滚动算子向前外扩的交易日数（0 表示不外扩）
+    rightDays::INT; // 未来引用（如标签 Ref(close,-2)）向后外扩的交易日数
 
-    def FeatureEngine(dbName_,tableName_,instruments_,expressions_,baseFields_,startTime_,endTime_,freq_="D"){
+    def FeatureEngine(dbName_,tableName_,instruments_,expressions_,baseFields_,startTime_,endTime_,freq_="D",lookbackDays_=0,rightDays_=0){
         dbName = dbName_;
         tableName = tableName_;
         instruments = instruments_;
-        expressions = expressions_; 
-        baseFields = baseFields_; 
+        expressions = expressions_;
+        baseFields = baseFields_;
         startTime = startTime_;
         endTime = endTime_;
         freq = freq_;
         tb = loadTable("dfs://"+dbName_,tableName_);
-
+        lookbackDays = lookbackDays_;
+        rightDays = rightDays_;
     };
 
     
@@ -566,10 +555,15 @@ class FeatureEngine{
         };
     };
 
-    def getDSDateRange(ds){
-        dsDateRng = select min(date) as start_dt,max(date) as end_dt from ds;
-        dates = getMarketCalendar("XSHG",dsDateRng['start_dt'][0],dsDateRng['end_dt'][0]);
-        return dates;
+    /**
+    * 把边界日期按交易日前移（shiftDays<0）或后移（shiftDays>0）。
+    * 用于按 lookbackDays/rightDays 外扩查询窗口；shiftDays 为 0 时原样返回。
+    */
+    def shiftTradeDays(dt, shiftDays){
+        if(shiftDays == 0){
+            return dt;
+        };
+        return temporalAdd(dt, shiftDays, `XSHG);
     };
 
     /**
@@ -594,40 +588,33 @@ class FeatureEngine{
         return cols;
     };
 
-    // 判断当前内存是否足以运行
-    def isRunWithAvailableMemory(){
-
+    /**
+    * 估算扩展窗口整段计算的峰值内存是否放得下（放不下则走分段模式）。
+    * 峰值 ≈ 基础长表 + panel 矩阵字典（约等于长表） + 每个表达式一个
+    * dates×codes 的 DOUBLE 结果矩阵；只允许占用 70% 空闲内存留计算余量。
+    */
+    def isRunWithAvailableMemory(extStart, extEnd){
         if(!isVector(baseFields)){
             fields = [baseFields]
         }else{
             fields = baseFields;
         };
-
-        return canRunWithAvailableMemory(normalizeDate(startTime,freq),normalizeDate(endTime,freq),toListInstruments(),fields,dbName,tableName);
+        est = estimateQueryMemory(normalizeDate(extStart,freq),normalizeDate(extEnd,freq),toListInstruments(),fields,dbName,tableName);
+        baseBytes = est["total_bits"];
+        exprBytes = est["total_rows"] * 8 * size(toListExpressions());
+        need = baseBytes * 2 + exprBytes;
+        return need <= mem().freeBytes * 0.7;
     };
 
-    // FIXME:创建按日期分区的数据源,关闭了内存大小预估，分区并未生效
-    def createDSByDate(daysStep=252,dateName=`date,exchange=`XSHG){
-        // 边界日期偏移一个交易日
-        boundEndDate = temporalAdd(endTime,1,`SSE);
-        if(!isVector(baseFields)){
-            fields = [baseFields]
-        }else{
-            fields = baseFields;
-        };
-
-        // if(isRunWithAvailableMemory()){
-        //     // 当前内存可用处理
-        //     // print("当前内存充足，使用单次查询模式");
-        //     // return repartitionDS(<select date,code,_$$fields from tb>,dateName,RANGE,[startTime,boundEndDate]);
-        //     return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
-        // }else{
-        //     // print("当前内存不足，使用分段查询模式");
-        //     bounds = splitDateRangesByTradeDays(startTime,endTime, "XSHG", daysStep);
-        //     // return repartitionDS(<select date,code,_$$fields from tb>, dateName,RANGE,bounds);
-        //     return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
-        // };
-        return repartitionDS(sql(select=buildSelectColumnsWithDefaults(),from=tb), dateName, RANGE, [startTime, boundEndDate]);
+    /**
+    * 扩展窗口内实际有数据的代码集合（升序）。
+    * 作为所有分段 panel 的统一列标签，保证各分段结果矩阵列对齐可按行拼接；
+    * 该集合与不指定 colLabel 时 panel 的列集合一致（数据中出现过的代码）。
+    */
+    def fetchPresentCodes(extStart, extEnd){
+        instList = toListInstruments();
+        codesTb = select distinct code from tb where date between pair(extStart, extEnd) and code in instList;
+        return sort(codesTb['code']);
     };
 
     // 标准化expressions为字典格式
@@ -644,47 +631,46 @@ class FeatureEngine{
         
     };
 
-    def buildSpanAwareWhereConditions(){
-        // 判断instruments是为dict
-        // 用以兼容spans
+    /**
+    * 构建查询过滤条件；日期用传入的查询区间（可能为外扩后的区间）。
+    * dict（成分股 spans）分支保留以兼容旧接口；当前计算分支由 Python 侧
+    * 传键列表全量计算，spans 掩码在 Python 侧补齐。
+    */
+    def buildWhereConditions(rangeStart, rangeEnd){
         if (isDict(instruments)){
-            codeRangeFilter = createDateStockMapping(startTime,endTime,instruments);
-            whereConditions = [expr(sqlCol(`date),between,pair(startTime,endTime)),<conditionalFilter(code,date,codeRangeFilter)>];
+            codeRangeFilter = createDateStockMapping(rangeStart,rangeEnd,instruments);
+            whereConditions = [expr(sqlCol(`date),between,pair(rangeStart,rangeEnd)),<conditionalFilter(code,date,codeRangeFilter)>];
         }
         else{
-            whereConditions = [expr(sqlCol(`date),between,pair(startTime,endTime)),expr(sqlCol(`code),in,instruments)];
+            whereConditions = [expr(sqlCol(`date),between,pair(rangeStart,rangeEnd)),expr(sqlCol(`code),in,instruments)];
         };
         return whereConditions;
     };
 
-    def fetchFeatures(ds){
+    /**
+    * 计算 [qStart, qEnd] 闭区间的表达式面板。
+    * 查询窗口向前外扩 lookbackDays、向后外扩 rightDays 个交易日，保证
+    * 滚动算子在区间头部、未来引用在区间尾部不因窗口不足产生 NULL；
+    * 计算完成后把结果矩阵的行截断回 [qStart, qEnd]。
+    * @param colLabels 统一列标签（升序代码向量），保证分段结果可按行拼接
+    * @return DICT<STRING,MATRIX> 别名 -> 结果矩阵（行-日期，列-代码）
+    */
+    def computeRangeFeatures(qStart, qEnd, colLabels){
 
-        // 添加错误参数检查
-        if(size(expressions) == 0) {
-            throw("表达式列表不能为空");
-        };
-        if(size(baseFields) == 0) {
-            throw("基础字段列表不能为空");
-        };
-        
-        // 判断expressions是否为dict，如果不是则标准化为字典
         expressionsDict = normalizeExpressionToDict();
 
-
-        // 判断instruments是为dict
-        // 用以兼容spans
-        whereConditions = buildSpanAwareWhereConditions();
+        // 外扩查询窗口：外扩部分只服务于窗口计算，不进入结果
+        extStart = shiftTradeDays(qStart, -lookbackDays);
+        extEnd = shiftTradeDays(qEnd, rightDays);
+        whereConditions = buildWhereConditions(extStart, extEnd);
 
         // 获取计算所需的基础数据
         try {
-            // 基础数据字段
             fieldExpr = buildSelectColumnsWithDefaults();
-            baseData = sql(select=fieldExpr,from=ds,where=whereConditions,orderBy=<date>).eval();
-            // 检查结果是否为空
+            baseData = sql(select=fieldExpr,from=tb,where=whereConditions,orderBy=<date>).eval();
+            // 检查结果是否为空；返回空 dict 与正常路径返回类型保持一致
             if(baseData.rows() == 0) {
                 print("警告: 基础数据获取失败,请检查表达式引用字段: " + fieldExpr);
-                // 返回空 dict 而不是 TABLE，与正常路径返回类型保持一致
-                // union_dict 期待 dict，收到 TABLE 会报 "Incompatible vector/matrix size"
                 return dict(STRING, ANY, true);
             };
 
@@ -692,16 +678,17 @@ class FeatureEngine{
             print("错误:表达式中含有未知基础字段.请检查: " + ex);
             return dict(STRING, ANY, true);
         };
-        
+
         // 生成数据字典
         colDatas = [];
         for (col in baseFields){
             colDatas.append!(baseData[col]);
         };
         // 数据字典 k基础字段,v-矩阵index为日期,columns-code
+        // colLabel 固定为统一代码集合，保证各分段矩阵列对齐
         dates = baseData['date'];
         codes = baseData['code'];
-        dataDict = dict(baseFields, panel(dates, codes, colDatas));
+        dataDict = dict(baseFields, panel(dates, codes, colDatas, , colLabels));
 
         // 收集结果
         result_dict = dict(STRING,ANY,true);
@@ -711,33 +698,129 @@ class FeatureEngine{
             try{
 
                 res = parseExpr(expression,dataDict).eval();
-            
+
                 // 检查结果是否为矩阵
                 if(res.rows()==0){
                     print("警告: 计算结果为空，请检查表达式: " + expression);
-                    res = createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
+                    result_dict[expressionsDict[expression]] = createEmptyTable(toListInstruments(),getMarketCalendar("XSHG",qStart,qEnd),`date`code+keys(expressionsDict));
+                    continue;
                 };
-                
+
+                // 截断回请求区间：先留存标签，loc 后显式重挂以防实现差异丢标签
+                rn = res.rowNames();
+                cn = res.colNames();
+                keep = (rn >= qStart) and (rn <= qEnd);
+                res = loc(res, keep);
+                res.rename!(rn[at(keep)], cn);
                 result_dict[expressionsDict[expression]] = res;
-                
+
             } catch(ex){
                 // ex[1]为错误信息，避免误用ex.msg属性
                 print("【特征计算失败】表达式: " + expression + " | 错误: " + ex[1]);
-                placeholder = createEmptyTable(toListInstruments(),getDSDateRange(ds),`date`code+keys(expressionsDict));
+                placeholder = createEmptyTable(toListInstruments(),getMarketCalendar("XSHG",qStart,qEnd),`date`code+keys(expressionsDict));
                 result_dict[expressionsDict[expression]] = placeholder;
             };
-        
+
         };
-        
+
 
         return result_dict;
 
     };
 
+    /**
+    * 合并各分段计算结果：各段矩阵列已按统一 colLabels 对齐，按行拼接。
+    * concatMatrix 不保证保留行/列标签，拼接后显式重挂。
+    * 段内出现占位表（表达式计算失败的兜底）时保持旧语义原样返回首个占位。
+    */
+    def mergeSegmentResults(segResults, colLabels){
+        merged = dict(STRING, ANY, true);
+        aliases = [];
+        for(seg in segResults){
+            for(k in keys(seg)){
+                if(!(k in aliases)){
+                    aliases.append!(k);
+                };
+            };
+        };
+        for(alias in aliases){
+            mats = [];
+            rowLabs = array(DATE, 0);
+            broken = false;
+            for(seg in segResults){
+                if(!(alias in keys(seg))){
+                    continue;
+                };
+                part = seg[alias];
+                if(regexFind(typestr(part), "MATRIX") == -1){
+                    merged[alias] = part;
+                    broken = true;
+                    break;
+                };
+                if(part.rows() > 0){
+                    mats.append!(part);
+                    rowLabs.append!(part.rowNames());
+                };
+            };
+            if(broken || size(mats) == 0){
+                continue;
+            };
+            if(size(mats) == 1){
+                merged[alias] = mats[0];
+                continue;
+            };
+            m = concatMatrix(mats, false);
+            m.rename!(rowLabs, colLabels);
+            merged[alias] = m;
+        };
+        return merged;
+    };
+
+    /**
+    * 特征计算主入口。
+    * 内存估算放得下时对整个请求区间单次计算；放不下时按 daysStep 切段
+    * 顺序计算再合并——每段查询都带 lookback/right 外扩，段内截断保证
+    * 分段边界处滚动算子结果与整段计算一致。
+    */
     def fetch(daysStep=252){
-        ds = self.createDSByDate(daysStep=daysStep,dateName=`date,exchange=`XSHG);
-        return mr(ds, fetchFeatures{}, , union_dict,parallel=true);
-    }
+        // 添加错误参数检查
+        if(size(expressions) == 0) {
+            throw("表达式列表不能为空");
+        };
+        if(size(baseFields) == 0) {
+            throw("基础字段列表不能为空");
+        };
+
+        extStart = shiftTradeDays(startTime, -lookbackDays);
+        extEnd = shiftTradeDays(endTime, rightDays);
+        presentCodes = fetchPresentCodes(extStart, extEnd);
+        if(size(presentCodes) == 0){
+            // 窗口内无任何数据：返回空 dict，Python 侧兜底为空结果
+            return dict(STRING, ANY, true);
+        };
+
+        // 内存放得下就整段单次计算；放不下才分段（分段带 lookback 重叠开销）
+        if(isRunWithAvailableMemory(extStart, extEnd)){
+            return computeRangeFeatures(startTime, endTime, presentCodes);
+        };
+
+        // 分段顺序计算：社区版（2 核/8GB）单机 mr 并行收益小且峰值内存翻倍，
+        // 顺序循环把峰值内存约束在单段规模
+        bounds = splitDateRangesByTradeDays(startTime, endTime, "XSHG", daysStep);
+        // 区间过短（如单交易日）无法切段时退回整段计算
+        if(size(bounds) < 2){
+            return computeRangeFeatures(startTime, endTime, presentCodes);
+        };
+        segResults = [];
+        n = size(bounds);
+        for(i in 0..(n-2)){
+            segStart = bounds[i];
+            // 闭区间分段：非末段的段尾取下一边界的前一交易日，避免段间重叠
+            segEnd = (i == n-2) ? bounds[i+1] : temporalAdd(bounds[i+1], -1, `XSHG);
+            segResults.append!(computeRangeFeatures(segStart, segEnd, presentCodes));
+        };
+        return mergeSegmentResults(segResults, presentCodes);
+    };
 
 };
 
@@ -747,10 +830,10 @@ class FeatureEngine{
 // // print(res)
 
 
-// daysStep 为带默认值的尾参：旧调用方（六参形式）行为不变
-def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name,daysStep=252){
-    
-    engine = FeatureEngine(db_name,table_name,instruments,expressions,baseFields,start_time,end_time)
-    
+// daysStep/lookbackDays/rightDays 为带默认值的尾参：旧调用方（六/七参形式）行为不变
+def FeatureEngineeringByDate(instruments,expressions,baseFields,start_time,end_time,db_name,table_name,daysStep=252,lookbackDays=0,rightDays=0){
+
+    engine = FeatureEngine(db_name,table_name,instruments,expressions,baseFields,start_time,end_time,"D",lookbackDays,rightDays)
+
     return engine.fetch(daysStep);
 };

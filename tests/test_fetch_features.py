@@ -155,17 +155,21 @@ class TestComputedBranch:
         assert len(df) == 5
 
     def test_days_step_default_and_configurable(self, monkeypatch):
-        """D7：mr 日期分片经 C[\"ddb_days_step\"] 可配置（默认 252，行为不变）。"""
+        """D7：日期分片经 C[\"ddb_days_step\"] 可配置（默认 252，行为不变）。
+
+        脚本尾参为 daysStep,lookbackDays,rightDays；FIELDS 的批回看窗口为
+        max(Ref(...,1)->1, Mean(...,5)->4) = 4 个交易日。
+        """
         from qlib.config import C
 
         session = _make_computed_session()
         fetch_features_from_ddb(session, CODES, self.FIELDS, START, END, "day")
-        assert ',252)' in [s for s in session.run_scripts if "FeatureEngineeringByDate" in s][0]
+        assert ',252,4,0)' in [s for s in session.run_scripts if "FeatureEngineeringByDate" in s][0]
 
         monkeypatch.setitem(C, "ddb_days_step", 126)
         session2 = _make_computed_session()
         fetch_features_from_ddb(session2, CODES, self.FIELDS, START, END, "day")
-        assert ',126)' in [s for s in session2.run_scripts if "FeatureEngineeringByDate" in s][0]
+        assert ',126,4,0)' in [s for s in session2.run_scripts if "FeatureEngineeringByDate" in s][0]
 
     def test_unrecognized_token_triggers_alpha_retry(self):
         """D5 兜底：未识别函数错误时全量加载 alpha 库并重试一次。"""
